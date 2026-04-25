@@ -656,6 +656,7 @@ export default function WolvreneTerminal() {
   const [accessEmail, setAccessEmail] = useState("");
   const [accessError, setAccessError] = useState("");
   const [accessLoading, setAccessLoading] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [timeframe, setTimeframe] = useState("5m");
   const [selectedSymbol, setSelectedSymbol] = useState(TRADE_SYMBOLS[0].symbol);
   const [assetMenuOpen, setAssetMenuOpen] = useState(false);
@@ -762,11 +763,12 @@ export default function WolvreneTerminal() {
 }, [selectedSymbol, timeframe]);
 
 useEffect(() => {
+  if (!hydrated) return;
   storageSet(
     signalMarkersKey(selectedSymbol, timeframe),
     signalMarkers.slice(-PRECISION_RULES.maxSignalMemory)
   );
-}, [signalMarkers, selectedSymbol, timeframe]);
+}, [signalMarkers, selectedSymbol, timeframe, hydrated]);
   useEffect(() => {
     const cachedAccess = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_granted") : null;
     const cachedEmail = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_email") : null;
@@ -1883,25 +1885,50 @@ const impulseBoost =
   }, [selectedSymbol]);
 
   useEffect(() => {
-    ordersRef.current = orders;
-    saveJson("wolvreneOrdersV15", orders);
-  }, [orders]);
+  ordersRef.current = orders;
+  if (!hydrated) return;
+  saveJson("wolvreneOrdersV15", orders);
+  }, [orders, hydrated]);
+  useEffect(() => {
+  alertsRef.current = alerts;
+  if (!hydrated) return;
+  saveJson("wolvreneAlertsV15", alerts);
+  }, [alerts, hydrated]);
 
   useEffect(() => {
-    alertsRef.current = alerts;
-    saveJson("wolvreneAlertsV15", alerts);
-  }, [alerts]);
+  if (!hydrated) return;
+  saveJson("wolvreneChartSettings", settings);
+  }, [settings, hydrated]);
 
-  useEffect(() => {
-    saveJson("wolvreneChartSettings", settings);
-  }, [settings]);
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneStructuredJournalV1", structuredJournal);
+}, [structuredJournal, hydrated]);
 
-  useEffect(() => { saveJson("wolvreneStructuredJournalV1", structuredJournal); }, [structuredJournal]);
-  useEffect(() => { saveJson("wolvreneLearningWeightsV1", learningWeights); }, [learningWeights]);
-  useEffect(() => { saveJson("wolvreneTradeManagerSettingsV1", tradeManagerSettings); }, [tradeManagerSettings]);
-  useEffect(() => { saveJson("wolvreneExternalAlertSettingsV1", externalAlertSettings); }, [externalAlertSettings]);
-  useEffect(() => { saveJson("wolvreneDecisionSettingsV1", decisionSettings); }, [decisionSettings]);
-  useEffect(() => { saveJson("wolvreneDecisionHistoryV1", decisionHistory); }, [decisionHistory]);
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneLearningWeightsV1", learningWeights);
+}, [learningWeights, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneTradeManagerSettingsV1", tradeManagerSettings);
+}, [tradeManagerSettings, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneExternalAlertSettingsV1", externalAlertSettings);
+}, [externalAlertSettings, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneDecisionSettingsV1", decisionSettings);
+}, [decisionSettings, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneDecisionHistoryV1", decisionHistory);
+}, [decisionHistory, hydrated]);
 
   useEffect(() => {
     setSettings(loadJson("wolvreneChartSettings", defaultSettings));
@@ -1914,6 +1941,7 @@ const impulseBoost =
     setExternalAlertSettings({ ...defaultExternalAlertSettings, ...loadJson("wolvreneExternalAlertSettingsV1", defaultExternalAlertSettings) });
     setDecisionSettings({ ...defaultDecisionSettings, ...loadJson("wolvreneDecisionSettingsV1", defaultDecisionSettings) });
     setDecisionHistory(loadJson("wolvreneDecisionHistoryV1", [] as DecisionPlan[]));
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
