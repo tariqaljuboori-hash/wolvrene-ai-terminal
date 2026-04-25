@@ -1,5 +1,5 @@
-"use client";
 // @ts-nocheck
+"use client";
 // WOLVRENE v36 ACCESS GATE BUILD — PRIVATE VIP TERMINAL
 // v35 Institutional AI Pro + professional access gate foundation for Whop/Clerk/NextAuth integration.
 
