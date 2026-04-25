@@ -196,7 +196,9 @@ function candleHistoryKey(symbol: string, tf: string) {
 function eliteJournalKey() {
   return "wolvrene_elite_journal_v2";
 }
-
+function signalMarkersKey(symbol: string, tf: string) {
+  return `wolvrene_signal_markers_${symbol}_${tf}`;
+}
 function learningStatsKey() {
   return "wolvrene_learning_stats_v35";
 }
@@ -753,7 +755,18 @@ export default function WolvreneTerminal() {
     setLearningStats(storageGet<LearningStats>(learningStatsKey(), defaultLearningStats()));
   }, []);
 
+  useEffect(() => {
+  setSignalMarkers(
+    storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
+  );
+}, [selectedSymbol, timeframe]);
 
+useEffect(() => {
+  storageSet(
+    signalMarkersKey(selectedSymbol, timeframe),
+    signalMarkers.slice(-PRECISION_RULES.maxSignalMemory)
+  );
+}, [signalMarkers, selectedSymbol, timeframe]);
   useEffect(() => {
     const cachedAccess = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_granted") : null;
     const cachedEmail = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_email") : null;
