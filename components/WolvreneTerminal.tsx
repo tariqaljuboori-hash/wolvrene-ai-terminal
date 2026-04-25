@@ -1035,7 +1035,15 @@ export default function WolvreneTerminal() {
     const openOrderPenalty = orders.some((order) => order.status !== "CLOSED") ? -7 : 0;
     const learningBoost = (learningWeights.session[session] || 0) + (learningWeights.timeframe[timeframe] || 0) + (direction ? learningWeights.bias[direction] || 0 : 0);
     const volatilityPenalty = candlesSummary.volatility === "HIGH" ? -5 : candlesSummary.volatility === "LOW" ? -2 : 0;
-    const impulseBoost = candlesSummary.impulse === direction ? 5 : candlesSummary.impulse === "NONE" ? 0 : -5;
+    const directionImpulse =
+  direction === "LONG" ? "BULLISH" :
+  direction === "SHORT" ? "BEARISH" :
+  "NONE";
+
+const impulseBoost =
+  candlesSummary.impulse === directionImpulse ? 5 :
+  candlesSummary.impulse === "NONE" ? 0 :
+  -5;
     const score = Math.round(Math.max(24, Math.min(96, 48 + sessionBoost + tfBoost + momentumBoost + locationBoost + openOrderPenalty + learningBoost + volatilityPenalty + impulseBoost)));
 
     const state: SignalState =
