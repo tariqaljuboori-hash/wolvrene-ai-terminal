@@ -163,6 +163,30 @@ type SessionSniperState = {
   reason: string;
 };
 
+function readStoredAccessEmail() {
+  if (typeof window === "undefined") return "";
+  const raw = localStorage.getItem("wolvrene_access_email");
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "string" ? parsed : "";
+  } catch {
+    return raw;
+  }
+}
+
+function readStoredAccessGranted() {
+  if (typeof window === "undefined") return false;
+  const raw = localStorage.getItem("wolvrene_access_granted");
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed === true || parsed === "true";
+  } catch {
+    return raw === "true";
+  }
+}
+
 function storageGet<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
@@ -708,6 +732,8 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 }
 
 export default function WolvreneTerminal() {
+  const [accessEmail, setAccessEmail] = useState("");
+  const [accessStatus, setAccessStatus] = useState<AccessStatus>("checking");
   const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
   const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
     const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
@@ -846,6 +872,16 @@ export default function WolvreneTerminal() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      const cachedEmail = readStoredAccessEmail();
+      const hasCachedAccess = readStoredAccessGranted();
+      setAccessEmail(cachedEmail);
+      setAccessStatus(hasCachedAccess && cachedEmail ? "granted" : "locked");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
       setSignalMarkers(
         storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
       );
@@ -868,8 +904,9 @@ useEffect(() => {
     }
 
     if (cleanEmail === WOLVRENE_ACCESS_CONFIG.ownerEmail) {
-      localStorage.setItem("wolvrene_access_granted", "true");
-      localStorage.setItem("wolvrene_access_email", cleanEmail);
+      storageSet("wolvrene_access_granted", true);
+      storageSet("wolvrene_access_email", cleanEmail);
+      setAccessEmail(cleanEmail);
       setAccessStatus("granted");
       return;
     }
@@ -887,8 +924,9 @@ useEffect(() => {
       const data = await response.json().catch(() => ({}));
 
       if (response.ok && data?.active) {
-        localStorage.setItem("wolvrene_access_granted", "true");
-        localStorage.setItem("wolvrene_access_email", cleanEmail);
+        storageSet("wolvrene_access_granted", true);
+        storageSet("wolvrene_access_email", cleanEmail);
+        setAccessEmail(cleanEmail);
         setAccessStatus("granted");
         return;
       }
@@ -3008,6 +3046,20 @@ useEffect(() => {
         let changed = false;
         const next = prev.map((entry) => {
           if (entry.result !== "OPEN") return entry;
+
+          const isLong = entry.side === "LONG";
+          const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
+          const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
+
+          if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
+
+          const exit = livePrice;
+          const { pnl, roi } = calcJournalPnL(entry, exit);
+          const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
+          const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
+          const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
+          changed = true;
+
 
           const isLong = entry.side === "LONG";
           const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
