@@ -1620,6 +1620,7 @@ const impulseBoost =
     return highQuality && executionSession && fastVolatility ? "SCALP" : "SWING";
   }, [decisionPlan.quality, decisionSettings.executeConfidence, session, candlesSummary.volatility]);
   const activeTradeMode: TradeMode = tradeModeSelection === "AUTO" ? autoTradeMode : tradeModeSelection;
+  const allowedModeTimeframes = activeTradeMode === "SCALP" ? SCALP_TIMEFRAMES : SWING_TIMEFRAMES;
   const signalLifecycleState = useMemo(() => {
     if (decisionPlan.phase === "SPAWNED") return "SPAWN";
     if (decisionPlan.phase === "VALIDATED") return "VALIDATE";
