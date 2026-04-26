@@ -147,6 +147,14 @@ type DynamicTradePlan = {
   earlyRiskCut: boolean;
 };
 
+type ClosedEliteResult = {
+  exit: number;
+  pnl: number;
+  roi: number;
+  result: EliteJournalEntry["result"];
+  closeReason: EliteJournalEntry["closeReason"];
+};
+
 type ChartCandle = {
   time: Time;
   open: number;
@@ -185,6 +193,32 @@ function readStoredAccessGranted() {
   } catch {
     return raw === "true";
   }
+}
+
+function resolveEliteJournalClose(
+  entry: EliteJournalEntry,
+  markPrice: number,
+  plan: DynamicTradePlan
+): ClosedEliteResult | null {
+  const isLong = entry.side === "LONG";
+  const hitTP = isLong ? markPrice >= plan.tp1 : markPrice <= plan.tp1;
+  const hitSL = isLong ? markPrice <= plan.dynamicSL : markPrice >= plan.dynamicSL;
+
+  if (!hitTP && !hitSL && !plan.earlyRiskCut) return null;
+
+  const exit = markPrice;
+  const { pnl, roi } = calcJournalPnL(entry, exit);
+  const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
+  const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
+  const closeReason: EliteJournalEntry["closeReason"] = hitTP
+    ? "TP_HIT"
+    : isBE
+    ? "BE"
+    : plan.earlyRiskCut
+    ? "EARLY_EXIT"
+    : "SL_HIT";
+
+  return { exit, pnl, roi, result, closeReason };
 }
 
 function storageGet<T>(key: string, fallback: T): T {
@@ -3046,6 +3080,22 @@ useEffect(() => {
         let changed = false;
         const next = prev.map((entry) => {
           if (entry.result !== "OPEN") return entry;
+
+          const closed = resolveEliteJournalClose(entry, livePrice, dynamicTradePlan);
+          if (!closed) return entry;
+          changed = true;
+
+          return {
+            ...entry,
+            exit: closed.exit,
+            pnl: closed.pnl,
+            roi: closed.roi,
+            result: closed.result,
+            closeReason: closed.closeReason,
+            closedAt: new Date().toLocaleString(),
+          };
+        });
+
 
           const isLong = entry.side === "LONG";
           const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
