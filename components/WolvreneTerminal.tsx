@@ -284,6 +284,9 @@ function signalMarkersKey(symbol: string, tf: string) {
 function activeExecutionTradeKey() {
   return "wolvrene_active_execution_trade_v1";
 }
+function tradeMarkersKey(symbol: string, tf: string) {
+  return `wolvrene_trade_markers_${symbol}_${tf}`;
+}
 function learningStatsKey() {
   return "wolvrene_learning_stats_v35";
 }
@@ -679,6 +682,26 @@ type SmartExecutionTrade = {
   maxDrawdown: number;
   bestExcursion: number;
 };
+type TradeChartMarker = {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  mode: TradeMode;
+  side: "LONG" | "SHORT";
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  confidence: number;
+  entryGrade: string;
+  reason: string;
+  openedAt: number;
+  closedAt?: number;
+  result?: "WIN" | "LOSS" | "BE" | "INVALIDATED";
+  pnl?: number;
+  closeReason?: string;
+};
 
 type MarketStructureState = {
   bias: StructureBias;
@@ -858,6 +881,10 @@ export default function WolvreneTerminal() {
   const [activeExecutionTrade, setActiveExecutionTrade] = useState<SmartExecutionTrade | null>(() =>
     storageGet<SmartExecutionTrade | null>(activeExecutionTradeKey(), null)
   );
+  const [lastClosedExecutionTrade, setLastClosedExecutionTrade] = useState<SmartExecutionTrade | null>(null);
+  const [tradeMarkers, setTradeMarkers] = useState<TradeChartMarker[]>(() =>
+    storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe), [])
+  );
   const [tradeRecalcCooldownCycles, setTradeRecalcCooldownCycles] = useState(0);
   const [lineEditor, setLineEditor] = useState<LineEditor>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
@@ -964,6 +991,13 @@ export default function WolvreneTerminal() {
     return () => window.clearTimeout(timer);
   }, [selectedSymbol, timeframe]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setTradeMarkers(storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe), []));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedSymbol, timeframe]);
+
 useEffect(() => {
   if (!hydrated) return;
   storageSet(
@@ -971,6 +1005,11 @@ useEffect(() => {
     signalMarkers.slice(-PRECISION_RULES.maxSignalMemory)
   );
 }, [signalMarkers, selectedSymbol, timeframe, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  storageSet(tradeMarkersKey(selectedSymbol, timeframe), tradeMarkers);
+}, [tradeMarkers, selectedSymbol, timeframe, hydrated]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1634,6 +1673,14 @@ const impulseBoost =
     if (score >= 4 && decisionPlan.quality >= 62) return "C";
     return "Reject";
   }, [triggerChecklist, institutionalPrecision.precisionScore, decisionPlan.quality, decisionPlan.direction, structureState.bias]);
+  const activeExecutionTradeView = useMemo(
+    () =>
+      activeExecutionTrade &&
+      ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status)
+        ? activeExecutionTrade
+        : null,
+    [activeExecutionTrade]
+  );
 
   useEffect(() => {
     if (decisionPlan.phase !== "EXECUTE" || !decisionPlan.direction || !decisionPlan.entry || !decisionPlan.sl || !decisionPlan.tp1 || !decisionPlan.tp2 || !decisionPlan.tp3) return;
@@ -1710,6 +1757,38 @@ const impulseBoost =
 
   useEffect(() => {
     if (!activeExecutionTrade) return;
+    const openStatuses: ExecutionTradeStatus[] = ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"];
+    if (!openStatuses.includes(activeExecutionTrade.status)) return;
+    if (activeExecutionTrade.symbol !== selectedSymbol || activeExecutionTrade.timeframe !== timeframe) return;
+    const timer = window.setTimeout(() => {
+      setTradeMarkers((prev) => {
+        if (prev.some((item) => item.id === activeExecutionTrade.id)) return prev;
+        return [
+          {
+            id: activeExecutionTrade.id,
+            symbol: activeExecutionTrade.symbol,
+            timeframe: activeExecutionTrade.timeframe,
+            mode: activeExecutionTrade.mode,
+            side: activeExecutionTrade.side,
+            entry: activeExecutionTrade.entry,
+            sl: activeExecutionTrade.sl,
+            tp1: activeExecutionTrade.tp1,
+            tp2: activeExecutionTrade.tp2,
+            tp3: activeExecutionTrade.tp3,
+            confidence: activeExecutionTrade.confidence,
+            entryGrade,
+            reason: activeExecutionTrade.reason,
+            openedAt: activeExecutionTrade.openedAt,
+          },
+          ...prev,
+        ].slice(0, 200);
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeExecutionTrade, selectedSymbol, timeframe, entryGrade]);
+
+  useEffect(() => {
+    if (!activeExecutionTrade) return;
     if (lastExecutionStatusRef.current === activeExecutionTrade.status) return;
     lastExecutionStatusRef.current = activeExecutionTrade.status;
     if (activeExecutionTrade.status !== "CLOSED_SL" && activeExecutionTrade.status !== "CLOSED_TP" && activeExecutionTrade.status !== "INVALIDATED" && activeExecutionTrade.status !== "CLOSED_MANUAL") return;
@@ -1727,6 +1806,26 @@ const impulseBoost =
       note: `${activeExecutionTrade.status} · Duration ${durationMin}m · MDD ${activeExecutionTrade.maxDrawdown.toFixed(2)} · MFE ${activeExecutionTrade.bestExcursion.toFixed(2)}`,
     });
     const timer = window.setTimeout(() => {
+      const result: TradeChartMarker["result"] =
+        activeExecutionTrade.status === "CLOSED_TP" ? "WIN" :
+        activeExecutionTrade.status === "INVALIDATED" ? "INVALIDATED" :
+        Math.abs(pnl) < Math.max(activeExecutionTrade.margin * 0.001, 0.01) ? "BE" :
+        pnl > 0 ? "WIN" : "LOSS";
+      setTradeMarkers((prev) =>
+        prev.map((marker) =>
+          marker.id === activeExecutionTrade.id
+            ? {
+                ...marker,
+                closedAt: Date.now(),
+                result,
+                pnl,
+                closeReason: activeExecutionTrade.status,
+              }
+            : marker
+        )
+      );
+      setLastClosedExecutionTrade(activeExecutionTrade);
+      setActiveExecutionTrade(null);
       setTradeRecalcCooldownCycles(1);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -4350,6 +4449,22 @@ useEffect(() => {
                   <p className="mt-1 text-[9px] text-gray-500">Unified brain · closed-candle signals · cooldown protected · stable memory</p>
                 </div>
 
+                {tradeMarkers.map((marker) => (
+                  (() => {
+                    const markerTop = Number(priceToTop(marker.entry) ?? 0);
+                    return (
+                  <div
+                    key={`tm-${marker.id}`}
+                    className={`absolute right-3 z-30 rounded-md border px-2 py-1 text-[10px] font-bold ${marker.side === "LONG" ? "border-green-500/50 bg-green-500/15 text-green-300" : "border-rose-500/50 bg-rose-500/15 text-rose-300"}`}
+                    style={{ top: `${Math.max(8, Math.min(580, markerTop))}px` }}
+                    title={`${marker.side} ${marker.timeframe} · Entry ${formatPrice(marker.entry)} · SL ${formatPrice(marker.sl)} · TP1 ${formatPrice(marker.tp1)} · Grade ${marker.entryGrade}${marker.result ? ` · ${marker.result}` : ""}`}
+                  >
+                    {marker.timeframe} {marker.side} ENTRY {marker.result ? `· ${marker.result}` : ""}
+                  </div>
+                    );
+                  })()
+                ))}
+
                 {alerts.map((alert) => (
                   <LineButton
                     key={alert.id}
@@ -4742,23 +4857,31 @@ useEffect(() => {
                 <div className="mt-4 rounded-2xl border border-green-700/30 bg-green-500/[0.04] p-3 text-xs space-y-2 sticky top-2 z-20">
                   <div className="flex items-center justify-between">
                     <span className="font-black text-green-300">ACTIVE TRADE PANEL · PRIORITY</span>
-                    <span className="text-[10px] text-gray-400">{activeExecutionTrade?.status || "NO ACTIVE TRADE"}</span>
+                    <span className="text-[10px] text-gray-400">{activeExecutionTradeView?.status || "NO ACTIVE TRADE"}</span>
                   </div>
-                  {activeExecutionTrade ? (
+                  {activeExecutionTradeView ? (
                     <>
-                      <div className="flex justify-between"><span className="text-gray-500">Side</span><span className={activeExecutionTrade.side === "LONG" ? "text-green-400" : "text-red-400"}>{activeExecutionTrade.side}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Entry / Live</span><span>{formatPrice(activeExecutionTrade.entry)} / {livePrice ? formatPrice(livePrice) : "--"}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">PnL $</span><span>{livePrice ? (((activeExecutionTrade.side === "LONG" ? livePrice - activeExecutionTrade.entry : activeExecutionTrade.entry - livePrice) * activeExecutionTrade.size).toFixed(2)) : "--"}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">PnL %</span><span>{livePrice ? ((((activeExecutionTrade.side === "LONG" ? livePrice - activeExecutionTrade.entry : activeExecutionTrade.entry - livePrice) * activeExecutionTrade.size) / Math.max(activeExecutionTrade.margin, 0.0001) * 100).toFixed(2) + "%") : "--"}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">SL</span><span className="text-red-300">{formatPrice(activeExecutionTrade.sl)}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">TP1/2/3</span><span>{activeExecutionTrade.tp1Hit ? "✔" : "·"} / {activeExecutionTrade.tp2Hit ? "✔" : "·"} / {activeExecutionTrade.tp3Hit ? "✔" : "·"}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Dist TP1 / SL</span><span>{livePrice ? `${Math.abs(activeExecutionTrade.tp1 - livePrice).toFixed(2)} / ${Math.abs(activeExecutionTrade.sl - livePrice).toFixed(2)}` : "--"}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Time In Trade</span><span>{Math.max(0, Math.round((Date.now() - activeExecutionTrade.openedAt) / 60000))}m</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Side</span><span className={activeExecutionTradeView.side === "LONG" ? "text-green-400" : "text-red-400"}>{activeExecutionTradeView.side}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Entry / Live</span><span>{formatPrice(activeExecutionTradeView.entry)} / {livePrice ? formatPrice(livePrice) : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">PnL $</span><span>{livePrice ? (((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2)) : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">PnL %</span><span>{livePrice ? ((((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size) / Math.max(activeExecutionTradeView.margin, 0.0001) * 100).toFixed(2) + "%") : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">SL</span><span className="text-red-300">{formatPrice(activeExecutionTradeView.sl)}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">TP1/2/3</span><span>{activeExecutionTradeView.tp1Hit ? "✔" : "·"} / {activeExecutionTradeView.tp2Hit ? "✔" : "·"} / {activeExecutionTradeView.tp3Hit ? "✔" : "·"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Dist TP1 / SL</span><span>{livePrice ? `${Math.abs(activeExecutionTradeView.tp1 - livePrice).toFixed(2)} / ${Math.abs(activeExecutionTradeView.sl - livePrice).toFixed(2)}` : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Time In Trade</span><span>{Math.max(0, Math.round((Date.now() - activeExecutionTradeView.openedAt) / 60000))}m</span></div>
                       <div className="flex justify-between"><span className="text-gray-500">Current Action</span><span>{managementBrain.action}</span></div>
                       <div className="flex justify-between"><span className="text-gray-500">Risk State</span><span>{decisionPlan.risk}</span></div>
                     </>
                   ) : (
-                    <p className="text-gray-500">No active execution trade. Engine is waiting for VALIDATE → EXECUTE conditions.</p>
+                    <p className="text-gray-500">No Active Trade. Engine is waiting for VALIDATE → EXECUTE conditions.</p>
+                  )}
+                  {lastClosedExecutionTrade && (
+                    <div className="mt-2 rounded-xl border border-zinc-800 bg-black/50 p-2">
+                      <p className="text-[10px] text-gray-400 mb-1">Last Closed Trade</p>
+                      <div className="flex justify-between"><span className="text-gray-500">Side / TF</span><span>{lastClosedExecutionTrade.side} · {lastClosedExecutionTrade.timeframe}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Status</span><span>{lastClosedExecutionTrade.status}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Close Reason</span><span>{lastClosedExecutionTrade.status}</span></div>
+                    </div>
                   )}
                 </div>
 
@@ -4771,7 +4894,7 @@ useEffect(() => {
                   </button>
                   <button
                     onClick={useSignalPlan}
-                    disabled={!decisionPlan.direction || decisionPlan.phase === "NO_TRADE" || decisionPlan.phase === "SCANNING" || decisionPlan.phase === "FILTERED" || Boolean(activeExecutionTrade && ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status))}
+                    disabled={!decisionPlan.direction || decisionPlan.phase === "NO_TRADE" || decisionPlan.phase === "SCANNING" || decisionPlan.phase === "FILTERED" || Boolean(activeExecutionTradeView)}
                     className="rounded-xl border border-green-700/50 bg-green-500/10 p-3 text-green-400 hover:bg-green-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-black disabled:text-gray-600"
                   >
                     Use Signal
