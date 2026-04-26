@@ -1622,6 +1622,7 @@ const impulseBoost =
     return highQuality && executionSession && fastVolatility ? "SCALP" : "SWING";
   }, [decisionPlan.quality, decisionSettings.executeConfidence, session, candlesSummary.volatility]);
   const activeTradeMode: TradeMode = tradeModeSelection === "AUTO" ? autoTradeMode : tradeModeSelection;
+  const allowedModeTimeframes = activeTradeMode === "SCALP" ? SCALP_TIMEFRAMES : SWING_TIMEFRAMES;
   const signalLifecycleState = useMemo(() => {
     if (decisionPlan.phase === "SPAWNED") return "SPAWN";
     if (decisionPlan.phase === "VALIDATED") return "VALIDATE";
@@ -1714,7 +1715,7 @@ const impulseBoost =
           margin,
           confidence: decisionPlan.quality,
           reason: decisionPlan.reason,
-          openedAt: decisionPlan.markerTime || Math.floor(Date.now() / 1000),
+          openedAt: Date.now(),
           status: "OPEN",
           invalidation: decisionPlan.invalidation || sl,
           tp1Hit: false,
@@ -1728,7 +1729,7 @@ const impulseBoost =
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [decisionPlan.phase, decisionPlan.direction, decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1, decisionPlan.tp2, decisionPlan.tp3, decisionPlan.quality, decisionPlan.reason, decisionPlan.invalidation, decisionPlan.markerTime, selectedSymbol, timeframe, activeTradeMode, draftLeverage, draftUsd]);
+  }, [decisionPlan.phase, decisionPlan.direction, decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1, decisionPlan.tp2, decisionPlan.tp3, decisionPlan.quality, decisionPlan.reason, decisionPlan.invalidation, selectedSymbol, timeframe, activeTradeMode, draftLeverage, draftUsd]);
 
   useEffect(() => {
     if (!activeExecutionTrade || !livePrice) return;
@@ -4495,6 +4496,22 @@ useEffect(() => {
                     })}
                   </>
                 )}
+
+                {tradeMarkers.map((marker) => (
+                  (() => {
+                    const markerTop = Number(priceToTop(marker.entry) ?? 0);
+                    return (
+                  <div
+                    key={`tm-${marker.id}`}
+                    className={`absolute right-3 z-30 rounded-md border px-2 py-1 text-[10px] font-bold ${marker.side === "LONG" ? "border-green-500/50 bg-green-500/15 text-green-300" : "border-rose-500/50 bg-rose-500/15 text-rose-300"}`}
+                    style={{ top: `${Math.max(8, Math.min(580, markerTop))}px` }}
+                    title={`${marker.side} ${marker.timeframe} · Entry ${formatPrice(marker.entry)} · SL ${formatPrice(marker.sl)} · TP1 ${formatPrice(marker.tp1)} · Grade ${marker.entryGrade}${marker.result ? ` · ${marker.result}` : ""}`}
+                  >
+                    {marker.timeframe} {marker.side} ENTRY {marker.result ? `· ${marker.result}` : ""}
+                  </div>
+                    );
+                  })()
+                ))}
 
                 {alerts.map((alert) => (
                   <LineButton
