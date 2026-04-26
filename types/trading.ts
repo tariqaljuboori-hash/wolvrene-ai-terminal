@@ -52,8 +52,19 @@ export type TradeOrder = {
   tps: TakeProfit[];
   size: number;
   leverage: number;
+  notionalUsd?: number;
+  marginUsd?: number;
+  marginMode?: "isolated" | "cross";
   createdAt: string;
 };
+
+export type DecisionLifecycleStage =
+  | "SPAWN"
+  | "VALIDATE"
+  | "EXECUTE"
+  | "MANAGE"
+  | "EXIT"
+  | "CANCEL";
 
 export type DragTarget =
   | { type: "alert"; alertId: number }

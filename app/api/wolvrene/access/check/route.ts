@@ -44,10 +44,7 @@ const ACTIVE_MEMBER_ACTIONS = new Set([
   "joined",
 ]);
 
-const ACTIVE_MEMBERSHIP_STATUSES = new Set([
-  "active",
-  "trialing",
-]);
+const ACTIVE_MEMBERSHIP_STATUSES = new Set(["active", "trialing"]);
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -115,11 +112,6 @@ export async function POST(req: Request) {
     const productIds = process.env.WHOP_PRODUCT_IDS;
     const planIds = process.env.WHOP_PLAN_IDS;
 
-    /*
-      Step 1:
-      Search Whop members by email. Whop supports query search by name, username, or email
-      when your API key has member:email:read.
-    */
     const membersResponse = await whopGet("members", {
       first: "10",
       query: cleanEmail,
@@ -149,9 +141,9 @@ export async function POST(req: Request) {
 
     const memberHasAccess = Boolean(
       matchingMember &&
-      matchingMember.access_level === "customer" &&
-      matchingMember.status === "joined" &&
-      ACTIVE_MEMBER_ACTIONS.has(String(matchingMember.most_recent_action || ""))
+        matchingMember.access_level === "customer" &&
+        matchingMember.status === "joined" &&
+        ACTIVE_MEMBER_ACTIONS.has(String(matchingMember.most_recent_action || ""))
     );
 
     if (memberHasAccess) {
@@ -164,11 +156,6 @@ export async function POST(req: Request) {
       });
     }
 
-    /*
-      Step 2 fallback:
-      Check memberships list by active/trialing status and product/company filters.
-      Then match the returned user email.
-    */
     const membershipsResponse = await whopGet("memberships", {
       first: "25",
       company_id: companyId,

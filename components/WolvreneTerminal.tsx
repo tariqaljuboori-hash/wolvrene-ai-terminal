@@ -1,4 +1,3 @@
-// @ts-nocheck
 "use client";
 // WOLVRENE v37 UNIFIED PRECISION PATCH — PRIVATE VIP TERMINAL
 // v36 base + unified settings persistence, USDT sizing, execute-only trade data, safer AI context, and cleaner live trade management.
@@ -9,10 +8,20 @@ import {
   createChart,
   IChartApi,
   ISeriesApi,
+  Time,
 } from "lightweight-charts";
 import { getBitgetCandles, getBitgetTickerStats, TF_SECONDS, TIMEFRAMES } from "@/lib/bitget";
 import { createOrderFromPrice, formatPrice, profitPct, riskPct } from "@/lib/tradingMath";
 import { loadJson, saveJson } from "@/lib/storage";
+import { toLifecycleStage } from "@/lib/decisionLifecycle";
+import {
+  calcBaseSizeFromUsd,
+  calcOrderMarginUsd,
+  calcOrderPnLUsd,
+  calcOrderRoiPct,
+  clampLeverage,
+  normalizeOrderFinancials,
+} from "@/lib/tradeCalculations";
 import type {
   Candle,
   ChartSettings,
@@ -138,6 +147,22 @@ type DynamicTradePlan = {
   earlyRiskCut: boolean;
 };
 
+type ClosedEliteResult = {
+  exit: number;
+  pnl: number;
+  roi: number;
+  result: EliteJournalEntry["result"];
+  closeReason: EliteJournalEntry["closeReason"];
+};
+
+type ChartCandle = {
+  time: Time;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
 type SessionSniperState = {
   session: string;
   quality: number;
@@ -145,6 +170,56 @@ type SessionSniperState = {
   allowSignal: boolean;
   reason: string;
 };
+
+function readStoredAccessEmail() {
+  if (typeof window === "undefined") return "";
+  const raw = localStorage.getItem("wolvrene_access_email");
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "string" ? parsed : "";
+  } catch {
+    return raw;
+  }
+}
+
+function readStoredAccessGranted() {
+  if (typeof window === "undefined") return false;
+  const raw = localStorage.getItem("wolvrene_access_granted");
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed === true || parsed === "true";
+  } catch {
+    return raw === "true";
+  }
+}
+
+function resolveEliteJournalClose(
+  entry: EliteJournalEntry,
+  markPrice: number,
+  plan: DynamicTradePlan
+): ClosedEliteResult | null {
+  const isLong = entry.side === "LONG";
+  const hitTP = isLong ? markPrice >= plan.tp1 : markPrice <= plan.tp1;
+  const hitSL = isLong ? markPrice <= plan.dynamicSL : markPrice >= plan.dynamicSL;
+
+  if (!hitTP && !hitSL && !plan.earlyRiskCut) return null;
+
+  const exit = markPrice;
+  const { pnl, roi } = calcJournalPnL(entry, exit);
+  const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
+  const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
+  const closeReason: EliteJournalEntry["closeReason"] = hitTP
+    ? "TP_HIT"
+    : isBE
+    ? "BE"
+    : plan.earlyRiskCut
+    ? "EARLY_EXIT"
+    : "SL_HIT";
+
+  return { exit, pnl, roi, result, closeReason };
+}
 
 function storageGet<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -163,6 +238,13 @@ function storageSet<T>(key: string, value: T) {
   } catch {
     // local storage can fail in private mode or when quota is full
   }
+}
+
+function toChartCandle(candle: Candle): ChartCandle {
+  return {
+    ...candle,
+    time: candle.time as Time,
+  };
 }
 
 function mergeCandleHistory(oldData: Candle[], freshData: Candle[]) {
@@ -401,7 +483,7 @@ async function fetchBitgetCandlesForSymbol(timeframe: string, symbol: string): P
   const rows = Array.isArray(json?.data) ? json.data : [];
 
   return rows
-    .map((row: any[]) => ({
+    .map((row: unknown[]) => ({
       time: Math.floor(Number(row?.[0]) / 1000),
       open: Number(row?.[1]),
       high: Number(row?.[2]),
@@ -679,35 +761,30 @@ const defaultUserPrefs: WolvreneUserPrefs = {
   hideUI: false,
 };
 
-function clampLeverage(value: string | number) {
-  return Math.max(1, Math.min(125, Number(value) || 1));
-}
-function calcBaseSizeFromUsd(notionalUsd: number, price: number) {
-  if (!Number.isFinite(notionalUsd) || !Number.isFinite(price) || price <= 0) return 0;
-  return Math.max(0, notionalUsd / price);
-}
-function calcUsdFromBaseSize(size: number, price: number) {
-  if (!Number.isFinite(size) || !Number.isFinite(price) || price <= 0) return 0;
-  return Math.max(0, size * price);
-}
 function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
   return Boolean(plan?.direction && (plan.phase === "EXECUTE" || plan.phase === "MANAGE" || plan.phase === "EXIT"));
 }
 
 export default function WolvreneTerminal() {
-  const [accessStatus, setAccessStatus] = useState<AccessStatus>("checking");
   const [accessEmail, setAccessEmail] = useState("");
+  const [accessStatus, setAccessStatus] = useState<AccessStatus>("checking");
   const [accessError, setAccessError] = useState("");
   const [accessLoading, setAccessLoading] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
+  const [hydrated] = useState(true);
   const [timeframe, setTimeframe] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).timeframe || "15m");
   const [selectedSymbol, setSelectedSymbol] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).selectedSymbol || TRADE_SYMBOLS[0].symbol);
   const [assetMenuOpen, setAssetMenuOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"dashboard" | "analytics" | "journal" | "backtest" | "pro">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).terminalTab || "dashboard");
   const [backtestRange, setBacktestRange] = useState<100 | 500 | 1000>(500);
-  const [eliteJournal, setEliteJournal] = useState<EliteJournalEntry[]>([]);
-  const [learningStats, setLearningStats] = useState<LearningStats>(defaultLearningStats());
-  const [settings, setSettings] = useState<ChartSettings>(defaultSettings);
+  const [eliteJournal, setEliteJournal] = useState<EliteJournalEntry[]>(() =>
+    storageGet<EliteJournalEntry[]>(eliteJournalKey(), [])
+  );
+  const [learningStats, setLearningStats] = useState<LearningStats>(() =>
+    storageGet<LearningStats>(learningStatsKey(), defaultLearningStats())
+  );
+  const [settings, setSettings] = useState<ChartSettings>(() =>
+    loadJson("wolvreneChartSettings", defaultSettings)
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -727,20 +804,43 @@ export default function WolvreneTerminal() {
   const [aiThinking, setAiThinking] = useState(false);
   const [aiBridgeStatus, setAiBridgeStatus] = useState<"ready" | "connected" | "missing_key" | "error">("ready");
 
-  const [orders, setOrders] = useState<TradeOrder[]>([]);
-  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [orders, setOrders] = useState<TradeOrder[]>(() =>
+    loadJson("wolvreneOrdersV15", [] as TradeOrder[]).map((order) =>
+      normalizeOrderFinancials(order)
+    )
+  );
+  const [alerts, setAlerts] = useState<PriceAlert[]>(() =>
+    loadJson("wolvreneAlertsV15", [] as PriceAlert[])
+  );
   const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null);
   const [lineEditor, setLineEditor] = useState<LineEditor>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
-  const [signalMarkers, setSignalMarkers] = useState<SignalMarker[]>([]);
+  const [signalMarkers, setSignalMarkers] = useState<SignalMarker[]>(() =>
+    storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
+  );
   const [recentCandles, setRecentCandles] = useState<Candle[]>([]);
-  const [structuredJournal, setStructuredJournal] = useState<StructuredJournalEntry[]>([]);
-  const [learningWeights, setLearningWeights] = useState<LearningWeights>(defaultLearningWeights);
-  const [tradeManagerSettings, setTradeManagerSettings] = useState<TradeManagerSettings>(defaultTradeManagerSettings);
-  const [externalAlertSettings, setExternalAlertSettings] = useState<ExternalAlertSettings>(defaultExternalAlertSettings);
-  const [decisionSettings, setDecisionSettings] = useState<DecisionSettings>(defaultDecisionSettings);
+  const [structuredJournal, setStructuredJournal] = useState<StructuredJournalEntry[]>(() =>
+    loadJson("wolvreneStructuredJournalV1", [] as StructuredJournalEntry[])
+  );
+  const [learningWeights, setLearningWeights] = useState<LearningWeights>(() =>
+    loadJson("wolvreneLearningWeightsV1", defaultLearningWeights)
+  );
+  const [tradeManagerSettings, setTradeManagerSettings] = useState<TradeManagerSettings>(() => ({
+    ...defaultTradeManagerSettings,
+    ...loadJson("wolvreneTradeManagerSettingsV1", defaultTradeManagerSettings),
+  }));
+  const [externalAlertSettings, setExternalAlertSettings] = useState<ExternalAlertSettings>(() => ({
+    ...defaultExternalAlertSettings,
+    ...loadJson("wolvreneExternalAlertSettingsV1", defaultExternalAlertSettings),
+  }));
+  const [decisionSettings, setDecisionSettings] = useState<DecisionSettings>(() => ({
+    ...defaultDecisionSettings,
+    ...loadJson("wolvreneDecisionSettingsV1", defaultDecisionSettings),
+  }));
   const [activeDecision, setActiveDecision] = useState<DecisionPlan | null>(null);
-  const [decisionHistory, setDecisionHistory] = useState<DecisionPlan[]>([]);
+  const [decisionHistory, setDecisionHistory] = useState<DecisionPlan[]>(() =>
+    loadJson("wolvreneDecisionHistoryV1", [] as DecisionPlan[])
+  );
   const [tradeWarnings, setTradeWarnings] = useState<string[]>([]);
 
   const [session, setSession] = useState("Loading...");
@@ -750,7 +850,9 @@ export default function WolvreneTerminal() {
   const [bias, setBias] = useState("NEUTRAL");
   const [livePrice, setLivePrice] = useState<number | null>(null);
   const [journalNote, setJournalNote] = useState("");
-  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>(() =>
+    loadJson("wolvreneJournal", [] as JournalEntry[])
+  );
   const [contextMenu, setContextMenu] = useState({ open: false, x: 0, y: 0, price: 0 });
 
   const [orderSide, setOrderSide] = useState<Exclude<Direction, null>>(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).orderSide || "LONG");
@@ -796,15 +898,23 @@ export default function WolvreneTerminal() {
   const visualSignalKeyRef = useRef("");
 
   useEffect(() => {
-    setEliteJournal(storageGet<EliteJournalEntry[]>(eliteJournalKey(), []));
-    setLearningStats(storageGet<LearningStats>(learningStatsKey(), defaultLearningStats()));
+    const timer = window.setTimeout(() => {
+      const cachedEmail = readStoredAccessEmail();
+      const hasCachedAccess = readStoredAccessGranted();
+      setAccessEmail(cachedEmail);
+      setAccessStatus(hasCachedAccess && cachedEmail ? "granted" : "locked");
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
-  setSignalMarkers(
-    storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
-  );
-}, [selectedSymbol, timeframe]);
+    const timer = window.setTimeout(() => {
+      setSignalMarkers(
+        storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedSymbol, timeframe]);
 
 useEffect(() => {
   if (!hydrated) return;
@@ -813,18 +923,6 @@ useEffect(() => {
     signalMarkers.slice(-PRECISION_RULES.maxSignalMemory)
   );
 }, [signalMarkers, selectedSymbol, timeframe, hydrated]);
-  useEffect(() => {
-    const cachedAccess = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_granted") : null;
-    const cachedEmail = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_email") : null;
-
-    if (cachedAccess === "true" && cachedEmail) {
-      setAccessEmail(cachedEmail);
-      setAccessStatus("granted");
-    } else {
-      setAccessStatus("locked");
-    }
-  }, []);
-
   async function verifyAccess(email?: string) {
     const cleanEmail = (email || accessEmail).trim().toLowerCase();
     if (!cleanEmail) {
@@ -833,8 +931,9 @@ useEffect(() => {
     }
 
     if (cleanEmail === WOLVRENE_ACCESS_CONFIG.ownerEmail) {
-      localStorage.setItem("wolvrene_access_granted", "true");
-      localStorage.setItem("wolvrene_access_email", cleanEmail);
+      storageSet("wolvrene_access_granted", true);
+      storageSet("wolvrene_access_email", cleanEmail);
+      setAccessEmail(cleanEmail);
       setAccessStatus("granted");
       return;
     }
@@ -852,8 +951,9 @@ useEffect(() => {
       const data = await response.json().catch(() => ({}));
 
       if (response.ok && data?.active) {
-        localStorage.setItem("wolvrene_access_granted", "true");
-        localStorage.setItem("wolvrene_access_email", cleanEmail);
+        storageSet("wolvrene_access_granted", true);
+        storageSet("wolvrene_access_email", cleanEmail);
+        setAccessEmail(cleanEmail);
         setAccessStatus("granted");
         return;
       }
@@ -1307,8 +1407,6 @@ const impulseBoost =
       ? `WAIT RETEST ${direction}: setup validated, but precision filter wants cleaner continuation/retest.`
       : phase === "SPAWNED"
       ? `EARLY WATCH ${direction}: idea spawned, not mature enough for execution.`
-      : phase === "MANAGE"
-      ? `MANAGE RUNNER ${direction}. Keep invalidation protected.`
       : phase === "FILTERED"
       ? `FILTERED: ${institutionalPrecision.reason}`
       : "Scan only. No institutional-grade decision yet.";
@@ -1929,14 +2027,19 @@ const impulseBoost =
 
   useEffect(() => {
     if (!executionPrice || !executionUsd) return;
-    setDraftSize(executionSize ? executionSize.toFixed(6) : "0");
+    const timer = window.setTimeout(() => {
+      setDraftSize(executionSize ? executionSize.toFixed(6) : "0");
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [executionPrice, executionUsd, executionSize]);
 
   useEffect(() => {
     selectedSymbolRef.current = selectedSymbol;
-    setLivePrice(null);
-    setSignalMarkers([]);
-    setRecentCandles([]);
+    const timer = window.setTimeout(() => {
+      setLivePrice(null);
+      setSignalMarkers([]);
+      setRecentCandles([]);
+    }, 0);
     lastCandleRef.current = null;
     candleSeriesRef.current?.setData([]);
     smartSignalRef.current = null;
@@ -1944,6 +2047,7 @@ const impulseBoost =
     lastDiscordSignalKeyRef.current = "";
     reloadCandles();
     getMarketStats();
+    return () => window.clearTimeout(timer);
   }, [selectedSymbol]);
 
   useEffect(() => {
@@ -1993,37 +2097,19 @@ useEffect(() => {
 }, [decisionHistory, hydrated]);
 
   useEffect(() => {
-    const savedPrefs = storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs);
-    setSelectedSymbol(savedPrefs.selectedSymbol || defaultUserPrefs.selectedSymbol);
-    setTimeframe(savedPrefs.timeframe || defaultUserPrefs.timeframe);
-    setMarginMode(savedPrefs.marginMode || defaultUserPrefs.marginMode);
-    setOrderType(savedPrefs.orderType || defaultUserPrefs.orderType);
-    setOrderSide(savedPrefs.orderSide || defaultUserPrefs.orderSide);
-    setDraftPrice(savedPrefs.draftPrice || "");
-    setDraftUsd(savedPrefs.draftUsd || defaultUserPrefs.draftUsd);
-    setDraftLeverage(savedPrefs.draftLeverage || defaultUserPrefs.draftLeverage);
-    setTerminalTab(savedPrefs.terminalTab || defaultUserPrefs.terminalTab);
-    setHideUI(Boolean(savedPrefs.hideUI));
-    setSettings(loadJson("wolvreneChartSettings", defaultSettings));
-    setOrders(loadJson("wolvreneOrdersV15", [] as TradeOrder[]));
-    setAlerts(loadJson("wolvreneAlertsV15", [] as PriceAlert[]));
-    setJournalEntries(loadJson("wolvreneJournal", [] as JournalEntry[]));
-    setStructuredJournal(loadJson("wolvreneStructuredJournalV1", [] as StructuredJournalEntry[]));
-    setLearningWeights(loadJson("wolvreneLearningWeightsV1", defaultLearningWeights));
-    setTradeManagerSettings({ ...defaultTradeManagerSettings, ...loadJson("wolvreneTradeManagerSettingsV1", defaultTradeManagerSettings) });
-    setExternalAlertSettings({ ...defaultExternalAlertSettings, ...loadJson("wolvreneExternalAlertSettingsV1", defaultExternalAlertSettings) });
-    setDecisionSettings({ ...defaultDecisionSettings, ...loadJson("wolvreneDecisionSettingsV1", defaultDecisionSettings) });
-    setDecisionHistory(loadJson("wolvreneDecisionHistoryV1", [] as DecisionPlan[]));
-    setHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (livePrice && (!draftPrice || orderType === "market")) setDraftPrice(livePrice.toFixed(2));
+    if (!livePrice || (draftPrice && orderType !== "market")) return;
+    const timer = window.setTimeout(() => {
+      setDraftPrice(livePrice.toFixed(2));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [livePrice, draftPrice, orderType]);
 
   function beep() {
     try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
       const ctx = new AudioContextClass();
       const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -2160,7 +2246,7 @@ useEffect(() => {
       const candles = await fetchBitgetCandlesForSymbol(timeframeRef.current, selectedSymbolRef.current);
       if (!chartAliveRef.current || !candleSeriesRef.current || candles.length === 0) return;
 
-      candleSeriesRef.current.setData(candles);
+      candleSeriesRef.current.setData(candles.map(toChartCandle));
       setRecentCandles(candles.slice(-PRECISION_RULES.candleHistory));
       lastCandleRef.current = candles[candles.length - 1];
 
@@ -2249,7 +2335,7 @@ useEffect(() => {
   function timeToLeft(time: number) {
     const chart = chartApiRef.current;
     if (!chart) return null;
-    const coordinate = chart.timeScale().timeToCoordinate(time as any);
+    const coordinate = chart.timeScale().timeToCoordinate(time as Time);
     return typeof coordinate === "number" ? coordinate : null;
   }
 
@@ -2283,7 +2369,7 @@ useEffect(() => {
       marginMode,
     } as TradeOrder;
 
-    setOrders((prev) => [order, ...prev]);
+    setOrders((prev) => [normalizeOrderFinancials(order, price), ...prev]);
     setSelectedOrderId(order.id);
     addJournal(`${side} ${orderType.toUpperCase()} order created at ${formatPrice(price)} — ${notionalUsd.toFixed(2)} USDT / ${Number(size).toFixed(6)} base / ${leverage}x / ${marginMode.toUpperCase()}`);
     addStructuredJournal({ event: "ORDER_CREATED", side, entry: price, note: `${side} ${orderType.toUpperCase()} order created` });
@@ -2303,21 +2389,21 @@ useEffect(() => {
   }
 
   function updateOrder(orderId: number, patch: Partial<TradeOrder>) {
-    setOrders((prev) => prev.map((order) => (order.id === orderId ? { ...order, ...patch } : order)));
+    setOrders((prev) =>
+      prev.map((order) =>
+        order.id === orderId ? normalizeOrderFinancials({ ...order, ...patch } as TradeOrder) : order
+      )
+    );
   }
 
   function orderPnL(order: TradeOrder) {
     const mark = livePrice || order.entry;
-    const size = Number(order.size) || 0;
-    const diff = order.side === "LONG" ? mark - order.entry : order.entry - mark;
-    return diff * size;
+    return calcOrderPnLUsd(order, mark);
   }
 
   function orderRoi(order: TradeOrder) {
-    const size = Number(order.size) || 0;
-    const leverage = Math.max(1, Number(order.leverage) || 1);
-    const margin = Number((order as any).marginUsd) || (order.entry && size ? (order.entry * size) / leverage : 0);
-    return margin ? (orderPnL(order) / margin) * 100 : 0;
+    const mark = livePrice || order.entry;
+    return calcOrderRoiPct(order, mark);
   }
 
   function estimatedLiquidation(order: TradeOrder) {
@@ -2328,9 +2414,7 @@ useEffect(() => {
 
 
   function positionMargin(order: TradeOrder) {
-    const size = Number(order.size) || 0;
-    const leverage = Math.max(1, Number(order.leverage) || 1);
-    return Number((order as any).marginUsd) || (order.entry && size ? (order.entry * size) / leverage : 0);
+    return calcOrderMarginUsd(order);
   }
 
   function breakevenPrice(order: TradeOrder) {
@@ -2364,9 +2448,11 @@ useEffect(() => {
           if (selectedOrderId === orderId) setSelectedOrderId(null);
           return [];
         }
-        const nextNotional = calcUsdFromBaseSize(nextSize, livePrice || order.entry);
-        const nextMargin = nextNotional / Math.max(1, Number(order.leverage) || 1);
-        return [{ ...order, size: Number(nextSize.toFixed(6)), notionalUsd: nextNotional, marginUsd: nextMargin } as any];
+        const nextOrder = normalizeOrderFinancials(
+          { ...order, size: Number(nextSize.toFixed(6)) } as TradeOrder,
+          livePrice || order.entry
+        );
+        return [nextOrder];
       })
     );
   }
@@ -2379,7 +2465,7 @@ useEffect(() => {
       size: Number(order.size) || 0.01,
       leverage: Number(order.leverage) || 1,
     } as TradeOrder;
-    setOrders((prev) => [reversedOrder, ...prev.filter((item) => item.id !== order.id)]);
+    setOrders((prev) => [normalizeOrderFinancials(reversedOrder, price), ...prev.filter((item) => item.id !== order.id)]);
     setSelectedOrderId(reversedOrder.id);
     addJournal(`Reversed #${String(order.id).slice(-4)} into ${oppositeSide}`);
   }
@@ -2389,7 +2475,9 @@ useEffect(() => {
 
     setOrders((prev) =>
       prev.map((order) => {
-        if (target.type === "entry" && order.id === target.orderId) return { ...order, entry: price };
+        if (target.type === "entry" && order.id === target.orderId) {
+          return normalizeOrderFinancials({ ...order, entry: price } as TradeOrder);
+        }
         if (target.type === "sl" && order.id === target.orderId) return { ...order, sl: price };
 
         if (target.type === "tp" && order.id === target.orderId) {
@@ -2514,7 +2602,7 @@ useEffect(() => {
       prev.map((order) => {
         if (order.status === "CLOSED") return order;
         let changed = false;
-        let nextOrder: TradeOrder = { ...order, tps: [...order.tps] };
+        const nextOrder: TradeOrder = { ...order, tps: [...order.tps] };
         const isLong = order.side === "LONG";
         const initialRisk = Math.max(Math.abs(order.entry - order.sl), order.entry * 0.001);
         let currentSize = Number(order.size) || 0;
@@ -2613,6 +2701,7 @@ useEffect(() => {
       confidence,
       signalPlan,
       decisionPlan,
+      decisionLifecycleStage: toLifecycleStage(decisionPlan.phase),
       structureState,
       liquidityState,
       triggerValidation,
@@ -2676,6 +2765,7 @@ useEffect(() => {
       confidence,
       signalPlan,
       decisionPlan,
+      decisionLifecycleStage: toLifecycleStage(decisionPlan.phase),
       structureState,
       liquidityState,
       triggerValidation,
@@ -2822,31 +2912,27 @@ useEffect(() => {
           : buildAIResponse(question);
 
       setAiBridgeStatus(data?.mode === "missing_key" ? "missing_key" : "connected");
-      setAiMessages((prev) =>
-        [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: answer,
-            time: new Date().toLocaleTimeString(),
-          },
-        ].slice(-40)
-      );
+      setAiMessages((prev) => {
+        const nextMessage: AIMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: answer,
+          time: new Date().toLocaleTimeString(),
+        };
+        return [...prev, nextMessage].slice(-40);
+      });
     } catch (error) {
       setAiBridgeStatus("error");
       const fallback = `${buildAIResponse(question)}\n\n[Bridge note] Real AI route is not responding yet. Check app/api/ai/route.ts and OPENAI_API_KEY in .env.local.`;
-      setAiMessages((prev) =>
-        [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: fallback,
-            time: new Date().toLocaleTimeString(),
-          },
-        ].slice(-40)
-      );
+      setAiMessages((prev) => {
+        const fallbackMessage: AIMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: fallback,
+          time: new Date().toLocaleTimeString(),
+        };
+        return [...prev, fallbackMessage].slice(-40);
+      });
     } finally {
       setAiThinking(false);
     }
@@ -2968,65 +3054,62 @@ useEffect(() => {
       reason: `${v25FinalBrain.reason} MTF ${mtfConfluence.bias}/${mtfConfluence.score}% · AI ${eliteAIScore}% · Session ${sessionSniper.mode}`,
     };
 
-    setEliteJournal((prev) => {
-      const next = [entry, ...prev].slice(0, PRECISION_RULES.journalLimit);
-      storageSet(eliteJournalKey(), next);
-      return next;
-    });
+    const timer = window.setTimeout(() => {
+      setEliteJournal((prev) => {
+        const next = [entry, ...prev].slice(0, PRECISION_RULES.journalLimit);
+        storageSet(eliteJournalKey(), next);
+        return next;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [eliteSignalAllowed, decisionPlan.phase, decisionPlan.direction, decisionPlan.entry, decisionPlan.markerTime, decisionPlan.quality, selectedSymbol, timeframe, eliteAIScore, mtfConfluence.bias, mtfConfluence.score, v25FinalBrain.reason, eliteJournal, session, setupKey, sessionSniper.mode]);
 
 
   useEffect(() => {
     if (!livePrice || !dynamicTradePlan) return;
 
-    setEliteJournal((prev) => {
-      let changed = false;
-      const next = prev.map((entry) => {
-        if (entry.result !== "OPEN") return entry;
+    const timer = window.setTimeout(() => {
+      setEliteJournal((prev) => {
+        let changed = false;
+        const next = prev.map((entry) => {
+          if (entry.result !== "OPEN") return entry;
 
-        const isLong = entry.side === "LONG";
-        const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
-        const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
+          const closed = resolveEliteJournalClose(entry, livePrice, dynamicTradePlan);
+          if (!closed) return entry;
+          changed = true;
 
-        if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
+          return {
+            ...entry,
+            exit: closed.exit,
+            pnl: closed.pnl,
+            roi: closed.roi,
+            result: closed.result,
+            closeReason: closed.closeReason,
+            closedAt: new Date().toLocaleString(),
+          };
+        });
 
-        const exit = livePrice;
-        const { pnl, roi } = calcJournalPnL(entry, exit);
-        const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
-        const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
-        const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
-        changed = true;
+        if (changed) {
+          storageSet(eliteJournalKey(), next);
 
-        return {
-          ...entry,
-          exit,
-          pnl,
-          roi,
-          result,
-          closeReason,
-          closedAt: new Date().toLocaleString(),
-        };
-      });
-
-      if (changed) {
-        storageSet(eliteJournalKey(), next);
-
-        const lastClosed = next.find((item, idx) => prev[idx]?.result === "OPEN" && item.result !== "OPEN");
-        if (lastClosed) {
-          const updated = updateLearningStats(
-            learningStats,
-            lastClosed.result === "WIN",
-            lastClosed.session || session,
-            lastClosed.symbol,
-            lastClosed.setup || setupKey
-          );
-          setLearningStats(updated);
-          storageSet(learningStatsKey(), updated);
+          const lastClosed = next.find((item, idx) => prev[idx]?.result === "OPEN" && item.result !== "OPEN");
+          if (lastClosed) {
+            const updated = updateLearningStats(
+              learningStats,
+              lastClosed.result === "WIN",
+              lastClosed.session || session,
+              lastClosed.symbol,
+              lastClosed.setup || setupKey
+            );
+            setLearningStats(updated);
+            storageSet(learningStatsKey(), updated);
+          }
         }
-      }
 
-      return changed ? next : prev;
-    });
+        return changed ? next : prev;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [livePrice, dynamicTradePlan, learningStats, session, setupKey]);
 
   useEffect(() => {
@@ -3049,13 +3132,16 @@ useEffect(() => {
 
 
   useEffect(() => {
-    updateSessionClock();
-    getMarketStats();
+    const initialTimer = window.setTimeout(() => {
+      updateSessionClock();
+      getMarketStats();
+    }, 0);
 
     const clockTimer = setInterval(updateSessionClock, 1000);
     const statsTimer = setInterval(getMarketStats, 15000);
 
     return () => {
+      window.clearTimeout(initialTimer);
       clearInterval(clockTimer);
       clearInterval(statsTimer);
     };
@@ -3176,7 +3262,7 @@ useEffect(() => {
             };
 
       try {
-        candleSeriesRef.current?.update(updatedCandle);
+        candleSeriesRef.current?.update(toChartCandle(updatedCandle));
         lastCandleRef.current = updatedCandle;
         setRecentCandles((prev) => { const sameBar = prev.length && prev[prev.length - 1]?.time === updatedCandle.time; const next = sameBar ? [...prev.slice(0, -1), updatedCandle] : [...prev, updatedCandle]; return next.slice(-PRECISION_RULES.candleHistory); });
       } catch {}
@@ -3241,9 +3327,11 @@ useEffect(() => {
       ws.onmessage = (event) => {
         if (event.data === "pong") return;
 
-        let msg: any;
+        let msg: unknown;
         try { msg = JSON.parse(event.data); } catch { return; }
-        const lastPriceRaw = msg?.data?.[0]?.lastPr;
+        if (!msg || typeof msg !== "object" || !("data" in msg)) return;
+        const payload = msg as { data?: Array<{ lastPr?: string }> };
+        const lastPriceRaw = payload.data?.[0]?.lastPr;
         if (!lastPriceRaw) return;
 
         const price = Number(lastPriceRaw);
