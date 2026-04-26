@@ -147,6 +147,14 @@ type DynamicTradePlan = {
   earlyRiskCut: boolean;
 };
 
+type ChartCandle = {
+  time: Time;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
 type SessionSniperState = {
   session: string;
   quality: number;
@@ -172,6 +180,13 @@ function storageSet<T>(key: string, value: T) {
   } catch {
     // local storage can fail in private mode or when quota is full
   }
+}
+
+function toChartCandle(candle: Candle): ChartCandle {
+  return {
+    ...candle,
+    time: candle.time as Time,
+  };
 }
 
 function mergeCandleHistory(oldData: Candle[], freshData: Candle[]) {
@@ -1327,8 +1342,6 @@ const impulseBoost =
       ? `WAIT RETEST ${direction}: setup validated, but precision filter wants cleaner continuation/retest.`
       : phase === "SPAWNED"
       ? `EARLY WATCH ${direction}: idea spawned, not mature enough for execution.`
-      : phase === "MANAGE"
-      ? `MANAGE RUNNER ${direction}. Keep invalidation protected.`
       : phase === "FILTERED"
       ? `FILTERED: ${institutionalPrecision.reason}`
       : "Scan only. No institutional-grade decision yet.";
@@ -2168,7 +2181,7 @@ useEffect(() => {
       const candles = await fetchBitgetCandlesForSymbol(timeframeRef.current, selectedSymbolRef.current);
       if (!chartAliveRef.current || !candleSeriesRef.current || candles.length === 0) return;
 
-      candleSeriesRef.current.setData(candles);
+      candleSeriesRef.current.setData(candles.map(toChartCandle));
       setRecentCandles(candles.slice(-PRECISION_RULES.candleHistory));
       lastCandleRef.current = candles[candles.length - 1];
 
@@ -2834,31 +2847,27 @@ useEffect(() => {
           : buildAIResponse(question);
 
       setAiBridgeStatus(data?.mode === "missing_key" ? "missing_key" : "connected");
-      setAiMessages((prev) =>
-        [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: answer,
-            time: new Date().toLocaleTimeString(),
-          },
-        ].slice(-40)
-      );
+      setAiMessages((prev) => {
+        const nextMessage: AIMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: answer,
+          time: new Date().toLocaleTimeString(),
+        };
+        return [...prev, nextMessage].slice(-40);
+      });
     } catch (error) {
       setAiBridgeStatus("error");
       const fallback = `${buildAIResponse(question)}\n\n[Bridge note] Real AI route is not responding yet. Check app/api/ai/route.ts and OPENAI_API_KEY in .env.local.`;
-      setAiMessages((prev) =>
-        [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: fallback,
-            time: new Date().toLocaleTimeString(),
-          },
-        ].slice(-40)
-      );
+      setAiMessages((prev) => {
+        const fallbackMessage: AIMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: fallback,
+          time: new Date().toLocaleTimeString(),
+        };
+        return [...prev, fallbackMessage].slice(-40);
+      });
     } finally {
       setAiThinking(false);
     }
@@ -3197,7 +3206,7 @@ useEffect(() => {
             };
 
       try {
-        candleSeriesRef.current?.update(updatedCandle);
+        candleSeriesRef.current?.update(toChartCandle(updatedCandle));
         lastCandleRef.current = updatedCandle;
         setRecentCandles((prev) => { const sameBar = prev.length && prev[prev.length - 1]?.time === updatedCandle.time; const next = sameBar ? [...prev.slice(0, -1), updatedCandle] : [...prev, updatedCandle]; return next.slice(-PRECISION_RULES.candleHistory); });
       } catch {}
