@@ -766,8 +766,6 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 }
 
 export default function WolvreneTerminal() {
-  const [accessEmail, setAccessEmail] = useState("");
-  const [accessStatus, setAccessStatus] = useState<AccessStatus>("checking");
   const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
   const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
     const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
@@ -3075,7 +3073,6 @@ useEffect(() => {
   useEffect(() => {
     if (!livePrice || !dynamicTradePlan) return;
 
-    const syncEliteJournal = () => {
     const timer = window.setTimeout(() => {
       setEliteJournal((prev) => {
         let changed = false;
@@ -3100,51 +3097,6 @@ useEffect(() => {
         if (changed) {
           storageSet(eliteJournalKey(), next);
 
-          const lastClosed = next.find(
-            (item, idx) => prev[idx]?.result === "OPEN" && item.result !== "OPEN"
-          );
-
-          const isLong = entry.side === "LONG";
-          const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
-          const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
-
-          if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
-
-          const exit = livePrice;
-          const { pnl, roi } = calcJournalPnL(entry, exit);
-          const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
-          const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
-          const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
-          changed = true;
-
-
-          const isLong = entry.side === "LONG";
-          const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
-          const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
-
-          if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
-
-          const exit = livePrice;
-          const { pnl, roi } = calcJournalPnL(entry, exit);
-          const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
-          const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
-          const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
-          changed = true;
-
-          return {
-            ...entry,
-            exit,
-            pnl,
-            roi,
-            result,
-            closeReason,
-            closedAt: new Date().toLocaleString(),
-          };
-        });
-
-        if (changed) {
-          storageSet(eliteJournalKey(), next);
-
           const lastClosed = next.find((item, idx) => prev[idx]?.result === "OPEN" && item.result !== "OPEN");
           if (lastClosed) {
             const updated = updateLearningStats(
@@ -3161,11 +3113,8 @@ useEffect(() => {
 
         return changed ? next : prev;
       });
-    };
-
-    const timer = window.setTimeout(syncEliteJournal, 0);
-
     }, 0);
+
     return () => window.clearTimeout(timer);
   }, [livePrice, dynamicTradePlan, learningStats, session, setupKey]);
 
