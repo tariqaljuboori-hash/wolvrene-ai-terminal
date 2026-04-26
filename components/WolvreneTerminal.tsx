@@ -768,6 +768,13 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 export default function WolvreneTerminal() {
   const [accessEmail, setAccessEmail] = useState("");
   const [accessStatus, setAccessStatus] = useState<AccessStatus>("checking");
+  const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
+  const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
+    const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
+    const cachedEmail = storageGet("wolvrene_access_email", "");
+    const hasCachedAccess = cachedAccess === true || cachedAccess === "true";
+    return hasCachedAccess && cachedEmail ? "granted" : "locked";
+  });
   const [accessError, setAccessError] = useState("");
   const [accessLoading, setAccessLoading] = useState(false);
   const [hydrated] = useState(true);
@@ -3085,6 +3092,45 @@ useEffect(() => {
             roi: closed.roi,
             result: closed.result,
             closeReason: closed.closeReason,
+            closedAt: new Date().toLocaleString(),
+          };
+        });
+
+
+          const isLong = entry.side === "LONG";
+          const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
+          const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
+
+          if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
+
+          const exit = livePrice;
+          const { pnl, roi } = calcJournalPnL(entry, exit);
+          const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
+          const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
+          const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
+          changed = true;
+
+
+          const isLong = entry.side === "LONG";
+          const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
+          const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
+
+          if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
+
+          const exit = livePrice;
+          const { pnl, roi } = calcJournalPnL(entry, exit);
+          const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
+          const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
+          const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
+          changed = true;
+
+          return {
+            ...entry,
+            exit,
+            pnl,
+            roi,
+            result,
+            closeReason,
             closedAt: new Date().toLocaleString(),
           };
         });
