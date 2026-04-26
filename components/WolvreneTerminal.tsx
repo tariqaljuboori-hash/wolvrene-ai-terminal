@@ -695,9 +695,10 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 export default function WolvreneTerminal() {
   const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
   const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
-    const cachedAccess = storageGet("wolvrene_access_granted", "false");
+    const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
     const cachedEmail = storageGet("wolvrene_access_email", "");
-    return cachedAccess === "true" && cachedEmail ? "granted" : "locked";
+    const hasCachedAccess = cachedAccess === true || cachedAccess === "true";
+    return hasCachedAccess && cachedEmail ? "granted" : "locked";
   });
   const [accessError, setAccessError] = useState("");
   const [accessLoading, setAccessLoading] = useState(false);
