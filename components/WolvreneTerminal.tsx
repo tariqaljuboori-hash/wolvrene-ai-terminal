@@ -284,8 +284,8 @@ function signalMarkersKey(symbol: string, tf: string) {
 function activeExecutionTradeKey() {
   return "wolvrene_active_execution_trade_v1";
 }
-function tradeMarkersKey(symbol: string, tf: string) {
-  return `wolvrene_trade_markers_${symbol}_${tf}`;
+function tradeMarkersKey(symbol: string, tf: string, mode: TradeMode) {
+  return `wolvrene_trade_markers_${symbol}_${tf}_${mode}`;
 }
 function learningStatsKey() {
   return "wolvrene_learning_stats_v35";
@@ -883,7 +883,7 @@ export default function WolvreneTerminal() {
   );
   const [lastClosedExecutionTrade, setLastClosedExecutionTrade] = useState<SmartExecutionTrade | null>(null);
   const [tradeMarkers, setTradeMarkers] = useState<TradeChartMarker[]>(() =>
-    storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe), [])
+    storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe, tradeModeSelection === "SWING" ? "SWING" : "SCALP"), [])
   );
   const [tradeRecalcCooldownCycles, setTradeRecalcCooldownCycles] = useState(0);
   const [lineEditor, setLineEditor] = useState<LineEditor>(null);
@@ -993,10 +993,11 @@ export default function WolvreneTerminal() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setTradeMarkers(storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe), []));
+      const modeBucket: TradeMode = tradeModeSelection === "SWING" ? "SWING" : "SCALP";
+      setTradeMarkers(storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe, modeBucket), []));
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [selectedSymbol, timeframe]);
+  }, [selectedSymbol, timeframe, tradeModeSelection]);
 
 useEffect(() => {
   if (!hydrated) return;
@@ -1008,8 +1009,9 @@ useEffect(() => {
 
 useEffect(() => {
   if (!hydrated) return;
-  storageSet(tradeMarkersKey(selectedSymbol, timeframe), tradeMarkers);
-}, [tradeMarkers, selectedSymbol, timeframe, hydrated]);
+  const modeBucket: TradeMode = tradeModeSelection === "SWING" ? "SWING" : "SCALP";
+  storageSet(tradeMarkersKey(selectedSymbol, timeframe, modeBucket), tradeMarkers);
+}, [tradeMarkers, selectedSymbol, timeframe, tradeModeSelection, hydrated]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -4214,11 +4216,11 @@ useEffect(() => {
                 </select>
               </div>
               <div className="grid gap-3 text-sm md:grid-cols-5">
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Signals</p><p className="text-2xl font-black">{eliteBacktest.totalSignals}</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Tested</p><p className="text-2xl font-black">{eliteBacktest.tested}</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Win Rate</p><p className="text-2xl font-black text-green-400">{eliteBacktest.winRate}%</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">PF</p><p className="text-2xl font-black text-yellow-400">{eliteBacktest.profitFactor}</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Avg Score</p><p className="text-2xl font-black text-cyan-400">{eliteBacktest.avgScore}%</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Signals</p><p className="text-2xl font-black">{backtestStats.trades}</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Wins</p><p className="text-2xl font-black">{backtestStats.wins}</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Win Rate</p><p className="text-2xl font-black text-green-400">{backtestStats.winRate.toFixed(2)}%</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">PF</p><p className="text-2xl font-black text-yellow-400">{backtestStats.profitFactor.toFixed(2)}</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Best Session</p><p className="text-xl font-black text-cyan-400">{backtestStats.bestSession}</p></div>
               </div>
             </div>
           )}
@@ -4234,10 +4236,12 @@ useEffect(() => {
                 </div>
                 <div className="rounded-xl border border-zinc-800 bg-black/40 p-3">
                   <p className="text-gray-500">Live Trade</p>
-                  <p className={liveTradeManagement.exitWarning ? "text-xl font-black text-red-400" : "text-xl font-black text-green-400"}>
-                    {liveTradeManagement.status}
+                  <p className={activeExecutionTradeView ? "text-xl font-black text-green-400" : "text-xl font-black text-gray-400"}>
+                    {activeExecutionTradeView ? `${activeExecutionTradeView.side} ${activeExecutionTradeView.status}` : "NO ACTIVE TRADE"}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500">PnL: {liveTradeManagement.pnl.toFixed(2)} · BE: {liveTradeManagement.moveBE ? "YES" : "NO"}</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    PnL: {activeExecutionTradeView && livePrice ? (((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2)) : "0.00"} · BE: {activeExecutionTradeView?.status === "BREAKEVEN" ? "YES" : "NO"}
+                  </p>
                 </div>
                 <div className="rounded-xl border border-zinc-800 bg-black/40 p-3">
                   <p className="text-gray-500">Dynamic TP/SL</p>
@@ -4448,6 +4452,50 @@ useEffect(() => {
                   <p className="mt-1 text-[10px] text-yellow-300">State: {v25FinalBrain.activeTradeState} · Entry: {v25FinalBrain.entryQuality} · TP hits: {v25FinalBrain.tpHitCount}</p>
                   <p className="mt-1 text-[9px] text-gray-500">Unified brain · closed-candle signals · cooldown protected · stable memory</p>
                 </div>
+                {activeExecutionTradeView && activeExecutionTradeView.timeframe !== timeframe && (
+                  <div className="absolute right-3 top-3 z-40 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-300">
+                    Active {activeExecutionTradeView.timeframe} {activeExecutionTradeView.side}
+                  </div>
+                )}
+
+                {tradeMarkers.map((marker) => {
+                  const left = timeToLeft(marker.openedAt);
+                  const top = priceToTop(marker.entry);
+                  if (left === null || top === null) return null;
+                  const isLong = marker.side === "LONG";
+                  return (
+                    <div
+                      key={`tm-${marker.id}`}
+                      className="absolute z-30 pointer-events-none"
+                      style={{ left: Math.max(4, left - 4), top: isLong ? top + 8 : top - 12 }}
+                      title={`${isLong ? "LONG" : "SHORT"} ${marker.timeframe} ${marker.mode} · Entry ${formatPrice(marker.entry)} · SL ${formatPrice(marker.sl)} · TP1 ${formatPrice(marker.tp1)}${marker.result ? ` · ${marker.result}` : ""}`}
+                    >
+                      <div className={isLong ? "h-2 w-2 rounded-full bg-green-400/90 border border-green-200/60" : "h-2 w-2 rounded-full bg-rose-400/90 border border-rose-200/60"} />
+                      <div className={`-mt-1 text-[7px] font-black ${isLong ? "text-green-300" : "text-rose-300"}`}>{isLong ? "L" : "S"}</div>
+                    </div>
+                  );
+                })}
+
+                {activeExecutionTradeView && activeExecutionTradeView.timeframe === timeframe && (
+                  <>
+                    {[{ label: `${activeExecutionTradeView.side} ENTRY`, price: activeExecutionTradeView.entry, color: activeExecutionTradeView.side === "LONG" ? "#22c55e" : "#ef4444" },
+                      { label: activeExecutionTradeView.status === "BREAKEVEN" ? "SL @ BE" : "SL", price: activeExecutionTradeView.sl, color: "#ef4444" },
+                      { label: "TP1", price: activeExecutionTradeView.tp1, color: activeExecutionTradeView.tp1Hit ? "#86efac" : "#22c55e" },
+                      { label: "TP2", price: activeExecutionTradeView.tp2, color: activeExecutionTradeView.tp2Hit ? "#86efac" : "#22c55e" },
+                      { label: "TP3", price: activeExecutionTradeView.tp3, color: activeExecutionTradeView.tp3Hit ? "#86efac" : "#22c55e" }].map((line) => {
+                      const top = priceToTop(line.price);
+                      if (top === null) return null;
+                      return (
+                        <div key={`exec-line-${line.label}`} className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top }}>
+                          <div style={{ borderTop: `1px dashed ${line.color}` }} />
+                          <div className="absolute right-3 -top-3 rounded-md border px-1.5 py-0.5 text-[9px] font-black" style={{ borderColor: line.color, color: line.color, background: "rgba(0,0,0,0.65)" }}>
+                            {line.label}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
 
                 {tradeMarkers.map((marker) => (
                   (() => {
@@ -5373,9 +5421,9 @@ useEffect(() => {
                         <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                           <p className="text-xs text-yellow-500 mb-3 font-bold">ADAPTIVE LEARNING ENGINE</p>
                           <div className="grid md:grid-cols-2 gap-3 text-sm">
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Wins / Losses</span><span>{learningWeights.wins} / {learningWeights.losses}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Current Session Weight</span><span>{(learningWeights.session[session] || 0).toFixed(2)}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Current TF Weight</span><span>{(learningWeights.timeframe[timeframe] || 0).toFixed(2)}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Wins / Losses</span><span>{learningStats.wins} / {learningStats.losses}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Total Samples</span><span>{learningStats.total}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Current Boost</span><span>{learningBoost}</span></div>
                           </div>
                           <button onClick={() => setLearningWeights(defaultLearningWeights)} className="mt-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-xs text-red-300 hover:bg-red-500/20">Reset Learning Weights</button>
                         </div>
