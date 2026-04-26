@@ -12,11 +12,19 @@ type AIContext = {
   wolfMode?: string;
   confidence?: number;
   marketStats?: Record<string, string>;
-  selectedOrder?: any;
-  openOrders?: any[];
-  activeAlerts?: any[];
-  lastCandle?: any;
+  selectedOrder?: Record<string, unknown>;
+  openOrders?: Record<string, unknown>[];
+  activeAlerts?: Record<string, unknown>[];
+  lastCandle?: Record<string, unknown>;
   platformMode?: string;
+};
+
+type ResponseContent = { text?: string };
+type ResponseOutputItem = { content?: ResponseContent[] };
+type OpenAIResponsesPayload = {
+  output_text?: string;
+  output?: ResponseOutputItem[];
+  error?: { message?: string };
 };
 
 function trimJson(value: unknown, max = 12000) {
@@ -57,6 +65,9 @@ Decision rules:
 - Always mention timeframe, session, bias, and current mark if provided.
 - If context is weak or missing, say what is missing and suggest waiting.
 - Never force a trade.
+- Never invent precision that is not in context (no fake win-rates, no fake backtest %, no fake probabilities).
+- If confidence/metrics are missing, explicitly say "unknown from provided data".
+- Explain decisions in lifecycle terms when possible: Spawn -> Validate -> Execute -> Manage -> Exit/Cancel.
 - Prefer structured response: Read, Risk, Plan, Invalidation, Next action.
 - For open positions, focus on risk management: SL, TP, partials, breakeven, invalidation.
 - Avoid overlong answers unless asked.
@@ -87,7 +98,7 @@ ${trimJson(history, 5000)}
       }),
     });
 
-    const data = await response.json();
+    const data = (await response.json()) as OpenAIResponsesPayload;
 
     if (!response.ok) {
       const message = data?.error?.message || "OpenAI request failed.";
@@ -96,16 +107,16 @@ ${trimJson(history, 5000)}
 
     const answer =
       data?.output_text ||
-      data?.output?.flatMap((item: any) => item?.content || [])
-        ?.map((content: any) => content?.text || "")
+      data?.output?.flatMap((item) => item?.content || [])
+        ?.map((content) => content?.text || "")
         ?.join("\n")
         ?.trim() ||
       "No AI answer returned.";
 
     return NextResponse.json({ answer });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error?.message || "AI route crashed." },
+      { error: error instanceof Error ? error.message : "AI route crashed." },
       { status: 500 }
     );
   }
