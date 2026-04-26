@@ -1566,6 +1566,7 @@ const impulseBoost =
     return highQuality && executionSession && fastVolatility ? "SCALP" : "SWING";
   }, [decisionPlan.quality, decisionSettings.executeConfidence, session, candlesSummary.volatility]);
   const activeTradeMode: TradeMode = tradeModeSelection === "AUTO" ? autoTradeMode : tradeModeSelection;
+  const allowedModeTimeframes = activeTradeMode === "SCALP" ? SCALP_TIMEFRAMES : SWING_TIMEFRAMES;
   const signalLifecycleState = useMemo(() => {
     if (decisionPlan.phase === "SPAWNED") return "SPAWN";
     if (decisionPlan.phase === "VALIDATED") return "VALIDATE";
@@ -4229,7 +4230,7 @@ useEffect(() => {
                     </button>
                   ))}
 
-                  {(["1m", "5m", "15m", "1H"] as const).map((tf) => (
+                  {allowedModeTimeframes.map((tf) => (
                     <button
                       key={tf}
                       onClick={() => setTimeframe(tf)}
