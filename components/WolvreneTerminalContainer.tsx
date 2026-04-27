@@ -3324,6 +3324,16 @@ useEffect(() => {
       `Action: ${structured.decision}`,
       `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
       `Next Confirmation: ${structured.nextAction}`,
+    return [
+      `Summary: ${structured.summary}`,
+      "",
+      `Reasoning:`,
+      ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
+      "",
+      `Decision: ${structured.decision}`,
+      `Next Action: ${structured.nextAction}`,
+      `Warnings: ${structured.warnings.join(" | ") || "None"}`,
+      `Invalidation: ${structured.invalidation}`,
       `Confidence Note: ${structured.confidenceNote}`,
     ].join("\n");
   }
