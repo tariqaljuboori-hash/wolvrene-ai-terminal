@@ -15,7 +15,7 @@ import { createOrderFromPrice, formatPrice, profitPct, riskPct } from "@/lib/tra
 import { loadJson, saveJson } from "@/lib/storage";
 import { runUnifiedBrain } from "@/core/unifiedBrain";
 import { buildRawDecisionPlan } from "@/core/decisionEngine";
-import { buildSanitizedBrainPayload } from "@/core/aiPayload";
+import { buildSanitizedBrainPayload, hasValidAIPayload } from "@/core/aiPayload";
 import { askWolvreneAICore, buildAIFailureFallback, getAICacheKey } from "@/core/aiCore";
 import { guardWolvreneAIResponse, type WolvreneStructuredResponse } from "@/core/aiResponseGuard";
 import type { ExplanationMode } from "@/core/aiPromptBuilder";
@@ -3274,7 +3274,12 @@ useEffect(() => {
     marketRegime: UnifiedWolvreneBrain.marketRegime,
   }), [UnifiedWolvreneBrain, session, riskFirewall]);
 
-  const sanitizedBrainPayload = useMemo(() => buildSanitizedBrainPayload(brain), [brain]);
+  const sanitizedBrainPayload = useMemo(() => {
+    const payload = buildSanitizedBrainPayload(brain);
+    console.log("Unified Brain Output:", brain);
+    console.log("Sanitized AI Payload:", payload);
+    return payload;
+  }, [brain]);
 
   const aiInsights = useMemo(() => {
     const notes: string[] = [];
@@ -3302,19 +3307,31 @@ useEffect(() => {
   );
 
   function formatAIResponseMessage(structured: WolvreneStructuredResponse) {
-    return [
-      `Summary: ${structured.summary}`,
-      "",
-      `Reasoning:`,
-      ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
-      "",
-      `Decision: ${structured.decision}`,
-      `Next Action: ${structured.nextAction}`,
-      `Warnings: ${structured.warnings.join(" | ") || "None"}`,
-      `Invalidation: ${structured.invalidation}`,
-      `Confidence Note: ${structured.confidenceNote}`,
-    ].join("\n");
-  }
+  const marketRead = `${sanitizedBrainPayload.phase} ${sanitizedBrainPayload.direction || "WAIT"} | Strategy ${sanitizedBrainPayload.strategyProfile.name} | Risk ${sanitizedBrainPayload.risk}`;
+
+  return [
+    `Summary: ${structured.summary}`,
+    "",
+    `Market Read: ${marketRead}`,
+    "",
+    `Reasoning:`,
+    ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
+    "",
+    `Scenarios:`,
+    ...(structured.scenarios && structured.scenarios.length
+      ? structured.scenarios.map((line, idx) => `${idx + 1}. ${line}`)
+      : [
+          "1. Primary Scenario: Waiting for confirmation-driven continuation.",
+          "2. Alternative Scenario: Rotation persists if trigger quality stays weak.",
+          "3. Trap Scenario: Fake breakout risk remains high."
+        ]),
+    "",
+    `Action: ${structured.decision}`,
+    `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
+    `Next Confirmation: ${structured.nextAction}`,
+    `Confidence Note: ${structured.confidenceNote}`,
+  ].join("\n");
+}
 
   async function sendAIMessage(text?: string) {
     const question = (text || aiInput).trim();
