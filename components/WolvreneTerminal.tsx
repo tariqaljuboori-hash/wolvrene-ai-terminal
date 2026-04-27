@@ -240,6 +240,18 @@ function storageSet<T>(key: string, value: T) {
   }
 }
 
+function normalizeEpochMs(value: number | null | undefined) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return Date.now();
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+}
+
+function toChartEpochSec(value: number | null | undefined) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return Math.floor(Date.now() / 1000);
+  return numeric > 1_000_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+}
+
 function toChartCandle(candle: Candle): ChartCandle {
   return {
     ...candle,
@@ -896,9 +908,11 @@ export default function WolvreneTerminal() {
     loadJson("wolvreneAlertsV15", [] as PriceAlert[])
   );
   const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null);
-  const [activeExecutionTrade, setActiveExecutionTrade] = useState<SmartExecutionTrade | null>(() =>
-    storageGet<SmartExecutionTrade | null>(activeExecutionTradeKey(), null)
-  );
+  const [activeExecutionTrade, setActiveExecutionTrade] = useState<SmartExecutionTrade | null>(() => {
+    const stored = storageGet<SmartExecutionTrade | null>(activeExecutionTradeKey(), null);
+    if (!stored) return null;
+    return { ...stored, openedAt: normalizeEpochMs(stored.openedAt) };
+  });
   const [lastClosedExecutionTrade, setLastClosedExecutionTrade] = useState<SmartExecutionTrade | null>(null);
   const [tradeMarkers, setTradeMarkers] = useState<TradeChartMarker[]>(() =>
     storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe, tradeModeSelection === "SWING" ? "SWING" : "SCALP"), [])
@@ -994,6 +1008,7 @@ export default function WolvreneTerminal() {
   const smartSignalCooldownRef = useRef(0);
   const visualSignalKeyRef = useRef("");
   const lastExecutionStatusRef = useRef<ExecutionTradeStatus | null>(null);
+  const signalMarkerDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1528,6 +1543,7 @@ const impulseBoost =
     const quality = Math.round(Math.max(0, Math.min(100, signalPlan.confidence + structureState.score + triggerScore + liquidityBoost + triggerBoost + agreementBoost + volatilityAdjust + institutionalBoost + conflictPenalty - 32)));
     const activeTradeBlocking = Boolean(
       activeExecutionTrade &&
+        activeExecutionTrade.symbol === selectedSymbol &&
         ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status) &&
         (!signalSubscriptionSettings.allowMultiTimeframeTrades || activeExecutionTrade.timeframe === timeframe)
     );
@@ -1711,6 +1727,11 @@ const impulseBoost =
     [activeExecutionTrade]
   );
   const signalFeedRows = useMemo(() => {
+    const hasActiveExecution = Boolean(
+      activeExecutionTrade &&
+        activeExecutionTrade.symbol === selectedSymbol &&
+        ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status)
+    );
     const rows = decisionHistory
       .filter((item) => item.direction)
       .map((item) => ({
@@ -1720,18 +1741,29 @@ const impulseBoost =
         timeframe: item.id.split("-")[0] || timeframe,
         mode: activeTradeMode,
         side: item.direction as "LONG" | "SHORT",
-        status: item.phase,
+        status: hasActiveExecution && item.phase === "EXECUTE" ? "MANAGE" : item.phase,
         confidence: item.quality,
         reason: item.reason.slice(0, 90),
-        executable: item.phase === "EXECUTE" || item.phase === "VALIDATED",
+        candleTime: Number(item.markerTime || 0),
+        executable: !hasActiveExecution && (item.phase === "EXECUTE" || item.phase === "VALIDATED"),
       }))
       .filter((row) => signalSubscriptionSettings.timeframes[row.timeframe] !== false)
       .filter((row) => signalSubscriptionSettings.modes[row.mode] !== false)
       .filter((row) => row.confidence >= signalSubscriptionSettings.minConfidence)
       .sort((a, b) => (a.id < b.id ? 1 : -1));
-    const dedup = rows.filter((row, idx, arr) => arr.findIndex((x) => x.id === row.id) === idx);
+    const dedup = rows.filter(
+      (row, idx, arr) =>
+        arr.findIndex(
+          (x) =>
+            x.symbol === row.symbol &&
+            x.timeframe === row.timeframe &&
+            x.side === row.side &&
+            x.status === row.status &&
+            x.candleTime === row.candleTime
+        ) === idx
+    );
     return dedup.slice(0, signalSubscriptionSettings.maxFeedRows);
-  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings]);
+  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade]);
 
   useEffect(() => {
     if (decisionPlan.phase !== "EXECUTE" || !decisionPlan.direction || !decisionPlan.entry || !decisionPlan.sl || !decisionPlan.tp1 || !decisionPlan.tp2 || !decisionPlan.tp3) return;
@@ -1743,7 +1775,18 @@ const impulseBoost =
     const tp3 = decisionPlan.tp3;
     const timer = window.setTimeout(() => {
       setActiveExecutionTrade((prev) => {
-        if (prev && (prev.status === "OPEN" || prev.status === "TP1_HIT" || prev.status === "TP2_HIT" || prev.status === "RUNNER")) return prev;
+        if (
+          prev &&
+          prev.symbol === selectedSymbol &&
+          (prev.status === "OPEN" ||
+            prev.status === "TP1_HIT" ||
+            prev.status === "TP2_HIT" ||
+            prev.status === "RUNNER" ||
+            prev.status === "BREAKEVEN" ||
+            prev.status === "CLOSING")
+        ) {
+          return prev;
+        }
         const leverage = Math.max(1, Number(draftLeverage) || 5);
         const margin = Math.max(10, Number(draftUsd) || 100);
         const notional = margin * leverage;
@@ -1846,7 +1889,7 @@ const impulseBoost =
             confidence: activeExecutionTrade.confidence,
             entryGrade,
             reason: activeExecutionTrade.reason,
-            openedAt: activeExecutionTrade.openedAt,
+            openedAt: toChartEpochSec(activeExecutionTrade.openedAt),
           },
           ...prev,
         ].slice(0, 200);
@@ -1860,10 +1903,11 @@ const impulseBoost =
     if (lastExecutionStatusRef.current === activeExecutionTrade.status) return;
     lastExecutionStatusRef.current = activeExecutionTrade.status;
     if (activeExecutionTrade.status !== "CLOSED_SL" && activeExecutionTrade.status !== "CLOSED_TP" && activeExecutionTrade.status !== "INVALIDATED" && activeExecutionTrade.status !== "CLOSED_MANUAL") return;
+    const openedAtMs = normalizeEpochMs(activeExecutionTrade.openedAt);
     const closePrice = activeExecutionTrade.status === "CLOSED_SL" || activeExecutionTrade.status === "INVALIDATED" || activeExecutionTrade.status === "CLOSED_MANUAL" ? activeExecutionTrade.sl : activeExecutionTrade.tp3;
     const pnlPerUnit = activeExecutionTrade.side === "LONG" ? closePrice - activeExecutionTrade.entry : activeExecutionTrade.entry - closePrice;
     const pnl = pnlPerUnit * activeExecutionTrade.size;
-    const durationMin = Math.max(0, Math.round((Date.now() - activeExecutionTrade.openedAt) / 60000));
+    const durationMin = Math.max(0, Math.floor((Date.now() - openedAtMs) / 60000));
     addStructuredJournal({
       event: pnl >= 0 ? "TP_HIT" : "SL_HIT",
       side: activeExecutionTrade.side,
@@ -3455,25 +3499,34 @@ useEffect(() => {
     smartSignalRef.current = { key, direction, quality, phase: plan.phase, barTime: nowBar, expiresAt: Date.now() + cooldownBars * tfSec * 1000 };
     smartSignalCooldownRef.current = cooldownBars;
 
-    setSignalMarkers((prev) => {
-      const cleaned = prev.filter((marker) => {
-        if (marker.timeframe !== timeframe) return true;
-        if (marker.direction === direction && nowBar - marker.time < cooldownBars * tfSec) return false;
-        return true;
+    if (signalMarkerDebounceRef.current) {
+      window.clearTimeout(signalMarkerDebounceRef.current);
+    }
+    signalMarkerDebounceRef.current = window.setTimeout(() => {
+      setSignalMarkers((prev) => {
+        const cleaned = prev.filter((marker) => {
+          if (marker.timeframe !== timeframe) return true;
+          if (marker.direction === direction && nowBar - marker.time < cooldownBars * tfSec) return false;
+          return true;
+        });
+        if (cleaned.some((marker) => marker.key === key)) return cleaned;
+        const nextMarker: SignalMarker = {
+          id: Number(markerTime),
+          key,
+          timeframe,
+          time: markerTime,
+          price: markerPrice,
+          state: stateForMarker,
+          direction: direction as Exclude<SignalDirection, null>,
+          confidence: quality,
+        };
+        return [...cleaned, nextMarker].slice(-PRECISION_RULES.maxSignalMemory);
       });
-      if (cleaned.some((marker) => marker.key === key)) return cleaned;
-      const nextMarker: SignalMarker = {
-        id: Date.now(),
-        key,
-        timeframe,
-        time: markerTime,
-        price: markerPrice,
-        state: stateForMarker,
-        direction: direction as Exclude<SignalDirection, null>,
-        confidence: quality,
-      };
-      return [...cleaned, nextMarker].slice(-PRECISION_RULES.maxSignalMemory);
-    });
+      signalMarkerDebounceRef.current = null;
+    }, 120);
+    return () => {
+      if (signalMarkerDebounceRef.current) window.clearTimeout(signalMarkerDebounceRef.current);
+    };
   }, [decisionPlan.id, decisionPlan.phase, decisionPlan.direction, decisionPlan.markerTime, decisionPlan.entry, decisionPlan.quality, signalPlan.state, signalPlan.markerTime, signalPlan.markerPrice, signalPlan.shouldMark, signalPlan.direction, signalPlan.confidence, timeframe, eliteSignalAllowed]);
 
 
@@ -4749,13 +4802,13 @@ useEffect(() => {
                         style={{ left: Math.max(6, left - 14), top: isLong ? top + 12 : top - 24 }}
                       >
                         <div
-                          className={`rounded-md border px-1.5 py-0.5 text-[8px] font-black shadow-[0_0_18px_rgba(0,0,0,0.85)] ${
+                          className={`h-3 w-3 rounded-full border text-[7px] font-black flex items-center justify-center shadow-[0_0_18px_rgba(0,0,0,0.85)] ${
                             isLong
-                              ? "border-green-500/70 bg-green-500/20 text-green-300"
-                              : "border-red-500/70 bg-red-500/20 text-red-300"
+                              ? "border-green-500/70 bg-green-500/30 text-green-200"
+                              : "border-red-500/70 bg-red-500/30 text-red-200"
                           }`}
                         >
-                          {isLong ? `L ${marker.confidence}%` : `S ${marker.confidence}%`}
+                          {isLong ? "L" : "S"}
                         </div>
                       </div>
                     );
@@ -5014,7 +5067,7 @@ useEffect(() => {
                       <div className="flex justify-between"><span className="text-gray-500">SL</span><span className="text-red-300">{formatPrice(activeExecutionTradeView.sl)}</span></div>
                       <div className="flex justify-between"><span className="text-gray-500">TP1/2/3</span><span>{activeExecutionTradeView.tp1Hit ? "✔" : "·"} / {activeExecutionTradeView.tp2Hit ? "✔" : "·"} / {activeExecutionTradeView.tp3Hit ? "✔" : "·"}</span></div>
                       <div className="flex justify-between"><span className="text-gray-500">Dist TP1 / SL</span><span>{livePrice ? `${Math.abs(activeExecutionTradeView.tp1 - livePrice).toFixed(2)} / ${Math.abs(activeExecutionTradeView.sl - livePrice).toFixed(2)}` : "--"}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Time In Trade</span><span>{Math.max(0, Math.round((Date.now() - activeExecutionTradeView.openedAt) / 60000))}m</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Time In Trade</span><span>{Math.max(0, Math.floor((Date.now() - normalizeEpochMs(activeExecutionTradeView.openedAt)) / 60000))}m</span></div>
                       <div className="flex justify-between"><span className="text-gray-500">Current Action</span><span>{managementBrain.action}</span></div>
                       <div className="flex justify-between"><span className="text-gray-500">Risk State</span><span>{decisionPlan.risk}</span></div>
                     </>
