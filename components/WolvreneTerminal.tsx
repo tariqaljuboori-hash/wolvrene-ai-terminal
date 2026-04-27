@@ -1773,8 +1773,11 @@ const impulseBoost =
     const tp1 = decisionPlan.tp1;
     const tp2 = decisionPlan.tp2;
     const tp3 = decisionPlan.tp3;
+    const markerEventTime = Number(decisionPlan.markerTime || Math.floor(Date.now() / 1000));
+    const tradeEventKey = `${selectedSymbol}-${timeframe}-${activeTradeMode}-${side}-${decisionPlan.phase}-${markerEventTime}`;
     const timer = window.setTimeout(() => {
       setActiveExecutionTrade((prev) => {
+        if (prev?.id === tradeEventKey) return prev;
         if (
           prev &&
           prev.symbol === selectedSymbol &&
@@ -1792,7 +1795,7 @@ const impulseBoost =
         const notional = margin * leverage;
         const size = notional / Math.max(entry, 0.00001);
         return {
-          id: `${selectedSymbol}-${timeframe}-${decisionPlan.direction}-${Date.now()}`,
+          id: tradeEventKey,
           symbol: selectedSymbol,
           timeframe,
           mode: activeTradeMode,
@@ -1892,11 +1895,11 @@ const impulseBoost =
             openedAt: toChartEpochSec(activeExecutionTrade.openedAt),
           },
           ...prev,
-        ].slice(0, 200);
+        ].slice(0, 50);
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [activeExecutionTrade, selectedSymbol, timeframe, entryGrade]);
+  }, [activeExecutionTrade?.id, activeExecutionTrade?.status, selectedSymbol, timeframe, entryGrade]);
 
   useEffect(() => {
     if (!activeExecutionTrade) return;
@@ -3488,11 +3491,10 @@ useEffect(() => {
 
     if (sameDirection && inCooldown && !stronger) return;
 
-    const phaseLabel = plan.phase === "EXECUTE" ? "ENTER NOW" : plan.phase === "VALIDATED" ? "WAIT RETEST" : plan.phase === "FILTERED" ? "FILTERED" : signalPlan.state;
     const stateForMarker: SignalState = direction === "LONG"
       ? plan.phase === "EXECUTE" ? "CONFIRMED LONG" : "WATCH LONG"
       : plan.phase === "EXECUTE" ? "CONFIRMED SHORT" : "WATCH SHORT";
-    const key = `${timeframe}-${direction}-${phaseLabel}-${markerTime}`;
+    const key = `${selectedSymbol}-${timeframe}-${activeTradeMode}-${direction}-${plan.phase}-${markerTime}`;
     if (visualSignalKeyRef.current === key) return;
     visualSignalKeyRef.current = key;
 
@@ -3527,7 +3529,7 @@ useEffect(() => {
     return () => {
       if (signalMarkerDebounceRef.current) window.clearTimeout(signalMarkerDebounceRef.current);
     };
-  }, [decisionPlan.id, decisionPlan.phase, decisionPlan.direction, decisionPlan.markerTime, decisionPlan.entry, decisionPlan.quality, signalPlan.state, signalPlan.markerTime, signalPlan.markerPrice, signalPlan.shouldMark, signalPlan.direction, signalPlan.confidence, timeframe, eliteSignalAllowed]);
+  }, [decisionPlan.id, decisionPlan.phase, decisionPlan.direction, decisionPlan.markerTime, decisionPlan.entry, decisionPlan.quality, signalPlan.state, signalPlan.markerTime, signalPlan.markerPrice, signalPlan.shouldMark, signalPlan.direction, signalPlan.confidence, timeframe, eliteSignalAllowed, selectedSymbol, activeTradeMode]);
 
 
   useEffect(() => {
