@@ -3,20 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 type AIContext = {
-  symbol?: string;
-  timeframe?: string;
-  livePrice?: number | null;
-  session?: string;
-  sessionCountdown?: string;
-  bias?: string;
-  wolfMode?: string;
-  confidence?: number;
-  marketStats?: Record<string, string>;
-  selectedOrder?: Record<string, unknown>;
-  openOrders?: Record<string, unknown>[];
-  activeAlerts?: Record<string, unknown>[];
-  lastCandle?: Record<string, unknown>;
-  platformMode?: string;
+  [key: string]: unknown;
 };
 
 type ResponseContent = { text?: string };
@@ -48,40 +35,39 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const question = String(body?.question || "").trim();
-    const context = (body?.context || {}) as AIContext;
-    const history = Array.isArray(body?.history) ? body.history.slice(-8) : [];
+    const payload = (body?.payload || {}) as AIContext;
+    const prompt = String(body?.prompt || "").trim();
+    const mode = String(body?.mode || "Trader");
+    const messages = Array.isArray(body?.messages) ? body.messages.slice(-8) : [];
 
     if (!question) {
       return NextResponse.json({ error: "Question is required." }, { status: 400 });
     }
 
     const systemPrompt = `
-You are WOLVRENE AI, a professional trading-analysis assistant embedded inside the user's private trading dashboard.
-You must analyze ONLY the provided live dashboard context. Do not pretend you can see anything not supplied.
-You are not a financial advisor. Keep responses educational and risk-focused.
-Style: direct, sharp, professional, Wolvrene tone. No hype, no guaranteed profits.
-
-Decision rules:
-- Always mention timeframe, session, bias, and current mark if provided.
-- If context is weak or missing, say what is missing and suggest waiting.
-- Never force a trade.
-- Never invent precision that is not in context (no fake win-rates, no fake backtest %, no fake probabilities).
-- If confidence/metrics are missing, explicitly say "unknown from provided data".
-- Explain decisions in lifecycle terms when possible: Spawn -> Validate -> Execute -> Manage -> Exit/Cancel.
-- Prefer structured response: Read, Risk, Plan, Invalidation, Next action.
-- For open positions, focus on risk management: SL, TP, partials, breakeven, invalidation.
-- Avoid overlong answers unless asked.
+You are WOLVRENE Institutional Desk.
+Use only provided sanitized UnifiedWolvreneBrain payload.
+No invented entries, SL, TP, confidence, direction, or strategy.
+Never promise profit. Never use hype.
+Return JSON-like object with keys:
+summary, reasoning, decision, nextAction, warnings, invalidation, confidenceNote.
 `;
 
     const userPrompt = `
 USER QUESTION:
 ${question}
 
-LIVE DASHBOARD CONTEXT:
-${trimJson(context)}
+EXPLANATION MODE:
+${mode}
 
-RECENT AI CHAT HISTORY:
-${trimJson(history, 5000)}
+SANITIZED BRAIN PAYLOAD:
+${trimJson(payload)}
+
+PRE-BUILT PROMPT:
+${prompt || "N/A"}
+
+RECENT CHAT HISTORY:
+${trimJson(messages, 5000)}
 `;
 
     const response = await fetch("https://api.openai.com/v1/responses", {
