@@ -1733,6 +1733,79 @@ const impulseBoost =
         : null,
     [activeExecutionTrade]
   );
+  const portfolioState = useMemo(() => {
+    const closedTradePnL = tradeMarkers
+      .filter((marker) => marker.result && Number.isFinite(marker.pnl))
+      .reduce((sum, marker) => sum + Number(marker.pnl || 0), 0);
+    const baseBalance = 10000;
+    const equity = baseBalance + closedTradePnL;
+    const openMargin = activeExecutionTradeView?.margin || 0;
+    const freeMargin = Math.max(0, equity - openMargin);
+    const peakEquity = Math.max(baseBalance, equity);
+    const drawdownPct = peakEquity > 0 ? Math.max(0, ((peakEquity - equity) / peakEquity) * 100) : 0;
+    return { baseBalance, equity, freeMargin, drawdownPct };
+  }, [tradeMarkers, activeExecutionTradeView]);
+
+  const riskFirewall = useMemo(() => {
+    const closed = tradeMarkers.filter((marker) => Boolean(marker.result));
+    const recent = closed.slice(0, 12);
+    let losingStreak = 0;
+    for (const marker of recent) {
+      if (Number(marker.pnl || 0) < 0) losingStreak += 1;
+      else break;
+    }
+    const dailyPnL = closed
+      .filter((marker) => marker.closedAt && Date.now() - Number(marker.closedAt) <= 24 * 60 * 60 * 1000)
+      .reduce((sum, marker) => sum + Number(marker.pnl || 0), 0);
+    const dailyLossPct = portfolioState.equity > 0 ? Math.max(0, (-dailyPnL / portfolioState.equity) * 100) : 0;
+    const pauseByDrawdown = portfolioState.drawdownPct >= 10;
+    const pauseByLoss = dailyLossPct >= 4;
+    const pauseByStreak = losingStreak >= 7;
+    const state = pauseByDrawdown || pauseByLoss || pauseByStreak
+      ? "PAUSED"
+      : losingStreak >= 5
+      ? "DANGER"
+      : losingStreak >= 3
+      ? "RISK"
+      : "NORMAL";
+    return {
+      state,
+      canTrade: state !== "PAUSED",
+      maxRiskPct: state === "RISK" ? 0.6 : state === "DANGER" ? 0.35 : 1,
+      reason: pauseByDrawdown
+        ? "Drawdown firewall active (>10%)."
+        : pauseByLoss
+        ? "Daily loss firewall active (>4%)."
+        : pauseByStreak
+        ? "Loss-streak firewall active (>=7)."
+        : "Risk firewall clear.",
+    };
+  }, [tradeMarkers, portfolioState]);
+
+  const finalDecisionEngine = useMemo(() => {
+    const mlCollapse = decisionPlan.quality < 45;
+    const inferredRegime = candlesSummary.volatility === "HIGH" ? "HIGH_VOL" : candlesSummary.volatility === "LOW" ? "LOW_VOL" : "NORMAL_VOL";
+    const extremeVol = candlesSummary.volatility === "HIGH" && inferredRegime === "HIGH_VOL";
+    if (!riskFirewall.canTrade) return { action: "PAUSE_SYSTEM" as const, reason: riskFirewall.reason };
+    if (mlCollapse) return { action: "BLOCK_TRADE" as const, reason: "ML quality collapsed below threshold." };
+    if (extremeVol) return { action: "REDUCE_SIZE" as const, reason: "Extreme volatility: reduce size and wait for confirmation." };
+    if (decisionPlan.phase === "EXECUTE") return { action: "ALLOW_TRADE" as const, reason: "Confluence and risk checks are valid." };
+    return { action: "WAIT" as const, reason: "Waiting for execution-grade phase." };
+  }, [riskFirewall, decisionPlan.quality, candlesSummary.volatility, decisionPlan.phase]);
+
+  const adaptiveSizing = useMemo(() => {
+    const baseMargin = Math.max(10, Number(draftUsd) || 100);
+    const confidenceFactor = Math.max(0.35, Math.min(1.6, decisionPlan.quality / 100));
+    const mlFactor = Math.max(0.4, Math.min(1.4, decisionPlan.quality / 100));
+    const drawdownFactor = Math.max(0.25, 1 - portfolioState.drawdownPct / 20);
+    const volFactor = candlesSummary.volatility === "HIGH" ? 0.6 : candlesSummary.volatility === "LOW" ? 1.1 : 1;
+    const modeFactor = activeTradeMode === "SCALP" ? 0.9 : 1;
+    const systemFactor =
+      finalDecisionEngine.action === "REDUCE_SIZE" ? 0.6 : finalDecisionEngine.action === "BLOCK_TRADE" || finalDecisionEngine.action === "PAUSE_SYSTEM" ? 0 : 1;
+    const margin = Math.max(10, Math.round(baseMargin * confidenceFactor * mlFactor * drawdownFactor * volFactor * modeFactor * systemFactor));
+    const maxRiskUsd = portfolioState.equity * (riskFirewall.maxRiskPct / 100);
+    return { margin, maxRiskUsd };
+  }, [draftUsd, decisionPlan.quality, portfolioState.drawdownPct, portfolioState.equity, candlesSummary.volatility, activeTradeMode, finalDecisionEngine.action, riskFirewall.maxRiskPct]);
   const signalFeedRows = useMemo(() => {
     const hasActiveExecution = Boolean(
       activeExecutionTrade &&
@@ -1774,6 +1847,7 @@ const impulseBoost =
 
   useEffect(() => {
     if (decisionPlan.phase !== "EXECUTE" || !decisionPlan.direction || !decisionPlan.entry || !decisionPlan.sl || !decisionPlan.tp1 || !decisionPlan.tp2 || !decisionPlan.tp3) return;
+    if (!riskFirewall.canTrade || finalDecisionEngine.action === "BLOCK_TRADE" || finalDecisionEngine.action === "PAUSE_SYSTEM") return;
     const side = decisionPlan.direction;
     const entry = decisionPlan.entry;
     const sl = decisionPlan.sl;
@@ -1798,9 +1872,11 @@ const impulseBoost =
           return prev;
         }
         const leverage = Math.max(1, Number(draftLeverage) || 5);
-        const margin = Math.max(10, Number(draftUsd) || 100);
+        const margin = adaptiveSizing.margin;
+        const perUnitRisk = Math.max(Math.abs(entry - sl), 0.00001);
         const notional = margin * leverage;
-        const size = notional / Math.max(entry, 0.00001);
+        const riskLimitedSize = adaptiveSizing.maxRiskUsd / perUnitRisk;
+        const size = Math.min(notional / Math.max(entry, 0.00001), riskLimitedSize);
         return {
           id: tradeEventKey,
           symbol: selectedSymbol,
@@ -1847,7 +1923,10 @@ const impulseBoost =
     timeframe,
     activeTradeMode,
     draftLeverage,
-    draftUsd,
+    adaptiveSizing.margin,
+    adaptiveSizing.maxRiskUsd,
+    finalDecisionEngine.action,
+    riskFirewall.canTrade,
   ]);
 
   useEffect(() => {
@@ -3216,10 +3295,14 @@ useEffect(() => {
     decision: decisionPlan,
     activeTrade: activeExecutionTradeView,
     performance: { eliteAIScore, backtestStats, realAccuracyStats },
+    portfolio: portfolioState,
+    riskFirewall,
+    finalDecision: finalDecisionEngine,
+    adaptiveSizing,
     learningState: { learningStats, learningWeights },
     mlState,
     marketRegime,
-  }), [selectedSymbol, activeTradeMode, timeframe, session, livePrice, signalPlan, decisionPlan, activeExecutionTradeView, eliteAIScore, backtestStats, realAccuracyStats, learningStats, learningWeights, mlState, marketRegime]);
+  }), [selectedSymbol, activeTradeMode, timeframe, session, livePrice, signalPlan, decisionPlan, activeExecutionTradeView, eliteAIScore, backtestStats, realAccuracyStats, portfolioState, riskFirewall, finalDecisionEngine, adaptiveSizing, learningStats, learningWeights, mlState, marketRegime]);
 
   const aiContext = useMemo(() => {
     const mark = livePrice || lastCandleRef.current?.close || 0;
@@ -4698,22 +4781,6 @@ useEffect(() => {
                     })}
                   </>
                 )}
-
-                {tradeMarkers.map((marker) => (
-                  (() => {
-                    const markerTop = Number(priceToTop(marker.entry) ?? 0);
-                    return (
-                  <div
-                    key={`tm-${marker.id}`}
-                    className={`absolute right-3 z-30 rounded-md border px-2 py-1 text-[10px] font-bold ${marker.side === "LONG" ? "border-green-500/50 bg-green-500/15 text-green-300" : "border-rose-500/50 bg-rose-500/15 text-rose-300"}`}
-                    style={{ top: `${Math.max(8, Math.min(580, markerTop))}px` }}
-                    title={`${marker.side} ${marker.timeframe} · Entry ${formatPrice(marker.entry)} · SL ${formatPrice(marker.sl)} · TP1 ${formatPrice(marker.tp1)} · Grade ${marker.entryGrade}${marker.result ? ` · ${marker.result}` : ""}`}
-                  >
-                    {marker.timeframe} {marker.side} ENTRY {marker.result ? `· ${marker.result}` : ""}
-                  </div>
-                    );
-                  })()
-                ))}
 
                 {alerts.map((alert) => (
                   <LineButton
