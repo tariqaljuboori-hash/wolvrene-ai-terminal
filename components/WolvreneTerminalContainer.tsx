@@ -3336,19 +3336,6 @@ useEffect(() => {
   async function sendAIMessage(text?: string) {
     const question = (text || aiInput).trim();
     if (!question || aiThinking || aiInFlightRef.current) return;
-    if (!hasValidAIPayload(sanitizedBrainPayload)) {
-      const missingPayloadMessage: AIMessage = {
-        id: Date.now() + 1,
-        role: "assistant",
-        text: "AI payload missing. Brain context not available.",
-        time: new Date().toLocaleTimeString(),
-      };
-      setAiMessages((prev) => [
-        ...prev,
-        missingPayloadMessage,
-      ].slice(-40));
-      return;
-    }
     const requestKey = getAICacheKey({ question, payload: sanitizedBrainPayload });
     if (lastAIRequestKeyRef.current === requestKey) return;
     lastAIRequestKeyRef.current = requestKey;
