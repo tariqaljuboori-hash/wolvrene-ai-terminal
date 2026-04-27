@@ -15,7 +15,7 @@ import { createOrderFromPrice, formatPrice, profitPct, riskPct } from "@/lib/tra
 import { loadJson, saveJson } from "@/lib/storage";
 import { runUnifiedBrain } from "@/core/unifiedBrain";
 import { buildRawDecisionPlan } from "@/core/decisionEngine";
-import { buildSanitizedBrainPayload } from "@/core/aiPayload";
+import { buildSanitizedBrainPayload, hasValidAIPayload } from "@/core/aiPayload";
 import { askWolvreneAICore, buildAIFailureFallback, getAICacheKey } from "@/core/aiCore";
 import { guardWolvreneAIResponse, type WolvreneStructuredResponse } from "@/core/aiResponseGuard";
 import type { ExplanationMode } from "@/core/aiPromptBuilder";
@@ -3274,7 +3274,12 @@ useEffect(() => {
     marketRegime: UnifiedWolvreneBrain.marketRegime,
   }), [UnifiedWolvreneBrain, session, riskFirewall]);
 
-  const sanitizedBrainPayload = useMemo(() => buildSanitizedBrainPayload(brain), [brain]);
+  const sanitizedBrainPayload = useMemo(() => {
+    const payload = buildSanitizedBrainPayload(brain);
+    console.log("Unified Brain Output:", brain);
+    console.log("Sanitized AI Payload:", payload);
+    return payload;
+  }, [brain]);
 
   const aiInsights = useMemo(() => {
     const notes: string[] = [];
@@ -3302,6 +3307,23 @@ useEffect(() => {
   );
 
   function formatAIResponseMessage(structured: WolvreneStructuredResponse) {
+    const marketRead = `${sanitizedBrainPayload.phase} ${sanitizedBrainPayload.direction || "WAIT"} | Strategy ${sanitizedBrainPayload.strategyProfile.name} | Risk ${sanitizedBrainPayload.risk}`;
+    return [
+      `Summary: ${structured.summary}`,
+      "",
+      `Market Read: ${marketRead}`,
+      "",
+      `Reasoning:`,
+      ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
+      "",
+      `Scenarios:`,
+      ...(structured.scenarios && structured.scenarios.length
+        ? structured.scenarios.map((line, idx) => `${idx + 1}. ${line}`)
+        : ["1. Primary Scenario: Waiting for confirmation-driven continuation.", "2. Alternative Scenario: Rotation persists if trigger quality stays weak.", "3. Trap Scenario: Fake breakout risk remains elevated."]),
+      "",
+      `Action: ${structured.decision}`,
+      `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
+      `Next Confirmation: ${structured.nextAction}`,
     return [
       `Summary: ${structured.summary}`,
       "",
@@ -3319,6 +3341,19 @@ useEffect(() => {
   async function sendAIMessage(text?: string) {
     const question = (text || aiInput).trim();
     if (!question || aiThinking || aiInFlightRef.current) return;
+    if (!hasValidAIPayload(sanitizedBrainPayload)) {
+      const missingPayloadMessage: AIMessage = {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: "AI payload missing. Brain context not available.",
+        time: new Date().toLocaleTimeString(),
+      };
+      setAiMessages((prev) => [
+        ...prev,
+        missingPayloadMessage,
+      ].slice(-40));
+      return;
+    }
     const requestKey = getAICacheKey({ question, payload: sanitizedBrainPayload });
     if (lastAIRequestKeyRef.current === requestKey) return;
     lastAIRequestKeyRef.current = requestKey;
