@@ -1893,7 +1893,7 @@ const impulseBoost =
           margin,
           confidence: decisionPlan.quality,
           reason: decisionPlan.reason,
-          openedAt: Date.now(),
+          openedAt: decisionPlan.markerTime || Math.floor(Date.now() / 1000),
           status: "OPEN",
           invalidation: decisionPlan.invalidation || sl,
           tp1Hit: false,
