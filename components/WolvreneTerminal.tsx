@@ -756,6 +756,15 @@ type DecisionSettings = {
   requireTriggerForExecute: boolean;
   proSignalOnly: boolean;
 };
+type SignalSubscriptionSettings = {
+  timeframes: Record<string, boolean>;
+  modes: Record<"SCALP" | "SWING", boolean>;
+  minConfidence: number;
+  cooldownSeconds: number;
+  maxFeedRows: number;
+  allowMultiTimeframeTrades: boolean;
+  executionProfile: "CONSERVATIVE" | "BALANCED" | "AGGRESSIVE";
+};
 
 type DecisionPlan = {
   id: string;
@@ -788,6 +797,15 @@ const defaultLearningWeights: LearningWeights = { session: {}, timeframe: {}, bi
 const defaultTradeManagerSettings: TradeManagerSettings = { autoMoveBE: true, autoPartialClose: true, trailingEnabled: true, trailingRMultiple: 1.4, structureWeaknessWarnings: true };
 const defaultExternalAlertSettings: ExternalAlertSettings = { discordWebhook: "", telegramWebhook: "", emailWebhook: "", enabled: false, discordSignalOnly: true, autoDiscordSignals: false, minSignalConfidence: 86 };
 const defaultDecisionSettings: DecisionSettings = { enabled: true, holdBars: 10, executeConfidence: 86, validateConfidence: 72, spawnConfidence: 58, cancelOnOppositeShift: true, showDecisionPanel: true, requireTriggerForExecute: true, proSignalOnly: true };
+const defaultSignalSubscriptionSettings: SignalSubscriptionSettings = {
+  timeframes: { "1m": false, "3m": false, "5m": true, "15m": true, "30m": false, "1H": false, "4H": false, "1D": false },
+  modes: { SCALP: true, SWING: true },
+  minConfidence: 70,
+  cooldownSeconds: 60,
+  maxFeedRows: 12,
+  allowMultiTimeframeTrades: false,
+  executionProfile: "BALANCED",
+};
 
 type WolvreneUserPrefs = {
   selectedSymbol: string;
@@ -910,10 +928,15 @@ export default function WolvreneTerminal() {
     ...defaultDecisionSettings,
     ...loadJson("wolvreneDecisionSettingsV1", defaultDecisionSettings),
   }));
+  const [signalSubscriptionSettings, setSignalSubscriptionSettings] = useState<SignalSubscriptionSettings>(() => ({
+    ...defaultSignalSubscriptionSettings,
+    ...loadJson("wolvreneSignalSubscriptionSettingsV1", defaultSignalSubscriptionSettings),
+  }));
   const [activeDecision, setActiveDecision] = useState<DecisionPlan | null>(null);
   const [decisionHistory, setDecisionHistory] = useState<DecisionPlan[]>(() =>
     loadJson("wolvreneDecisionHistoryV1", [] as DecisionPlan[])
   );
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
   const [tradeWarnings, setTradeWarnings] = useState<string[]>([]);
 
   const [session, setSession] = useState("Loading...");
@@ -1503,7 +1526,11 @@ const impulseBoost =
     const conflictPenalty = institutionalPrecision.hardConflict ? -42 : institutionalPrecision.triggerOpposesStructure || institutionalPrecision.liquidityOpposesTrigger ? -22 : 0;
     const proSignal = Boolean(direction && institutionalPrecision.eliteAllowed && (directionalAgreement || liquidityState.trapDirection === direction || triggerValidation.quality === "SNIPER"));
     const quality = Math.round(Math.max(0, Math.min(100, signalPlan.confidence + structureState.score + triggerScore + liquidityBoost + triggerBoost + agreementBoost + volatilityAdjust + institutionalBoost + conflictPenalty - 32)));
-    const activeTradeBlocking = Boolean(activeExecutionTrade && ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status));
+    const activeTradeBlocking = Boolean(
+      activeExecutionTrade &&
+        ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status) &&
+        (!signalSubscriptionSettings.allowMultiTimeframeTrades || activeExecutionTrade.timeframe === timeframe)
+    );
     const cooldownBlocking = tradeRecalcCooldownCycles > 0;
 
     const phase: DecisionPhase = !decisionSettings.enabled
@@ -1576,7 +1603,7 @@ const impulseBoost =
       markerTime: signalPlan.markerTime || time,
       shouldMark: !institutionalPrecision.hardConflict && (phase === "VALIDATED" || phase === "EXECUTE" || (phase === "SPAWNED" && quality >= 68)),
     };
-  }, [livePrice, signalPlan, structureState, liquidityState, triggerValidation, candlesSummary.volatility, decisionSettings, timeframe, institutionalPrecision, activeExecutionTrade, tradeRecalcCooldownCycles]);
+  }, [livePrice, signalPlan, structureState, liquidityState, triggerValidation, candlesSummary.volatility, decisionSettings, timeframe, institutionalPrecision, activeExecutionTrade, tradeRecalcCooldownCycles, signalSubscriptionSettings.allowMultiTimeframeTrades]);
 
   useEffect(() => {
     setActiveDecision((prev) => {
@@ -1683,6 +1710,28 @@ const impulseBoost =
         : null,
     [activeExecutionTrade]
   );
+  const signalFeedRows = useMemo(() => {
+    const rows = decisionHistory
+      .filter((item) => item.direction)
+      .map((item) => ({
+        id: item.id,
+        time: new Date(item.createdAt).toLocaleTimeString(),
+        symbol: selectedSymbol,
+        timeframe: item.id.split("-")[0] || timeframe,
+        mode: activeTradeMode,
+        side: item.direction as "LONG" | "SHORT",
+        status: item.phase,
+        confidence: item.quality,
+        reason: item.reason.slice(0, 90),
+        executable: item.phase === "EXECUTE" || item.phase === "VALIDATED",
+      }))
+      .filter((row) => signalSubscriptionSettings.timeframes[row.timeframe] !== false)
+      .filter((row) => signalSubscriptionSettings.modes[row.mode] !== false)
+      .filter((row) => row.confidence >= signalSubscriptionSettings.minConfidence)
+      .sort((a, b) => (a.id < b.id ? 1 : -1));
+    const dedup = rows.filter((row, idx, arr) => arr.findIndex((x) => x.id === row.id) === idx);
+    return dedup.slice(0, signalSubscriptionSettings.maxFeedRows);
+  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings]);
 
   useEffect(() => {
     if (decisionPlan.phase !== "EXECUTE" || !decisionPlan.direction || !decisionPlan.entry || !decisionPlan.sl || !decisionPlan.tp1 || !decisionPlan.tp2 || !decisionPlan.tp3) return;
@@ -1715,6 +1764,7 @@ const impulseBoost =
           margin,
           confidence: decisionPlan.quality,
           reason: decisionPlan.reason,
+          openedAt: decisionPlan.markerTime || Math.floor(Date.now() / 1000),
           openedAt: Date.now(),
           status: "OPEN",
           invalidation: decisionPlan.invalidation || sl,
@@ -1729,6 +1779,7 @@ const impulseBoost =
       });
     }, 0);
     return () => window.clearTimeout(timer);
+  }, [decisionPlan.phase, decisionPlan.direction, decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1, decisionPlan.tp2, decisionPlan.tp3, decisionPlan.quality, decisionPlan.reason, decisionPlan.invalidation, decisionPlan.markerTime, selectedSymbol, timeframe, activeTradeMode, draftLeverage, draftUsd]);
   }, [decisionPlan.phase, decisionPlan.direction, decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1, decisionPlan.tp2, decisionPlan.tp3, decisionPlan.quality, decisionPlan.reason, decisionPlan.invalidation, selectedSymbol, timeframe, activeTradeMode, draftLeverage, draftUsd]);
 
   useEffect(() => {
@@ -2387,7 +2438,6 @@ const impulseBoost =
   }, [executionPrice, executionUsd, executionSize]);
 
   useEffect(() => {
-    selectedSymbolRef.current = selectedSymbol;
     const timer = window.setTimeout(() => {
       setLivePrice(null);
       setSignalMarkers([]);
@@ -2448,6 +2498,11 @@ useEffect(() => {
   if (!hydrated) return;
   saveJson("wolvreneDecisionHistoryV1", decisionHistory);
 }, [decisionHistory, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneSignalSubscriptionSettingsV1", signalSubscriptionSettings);
+}, [signalSubscriptionSettings, hydrated]);
 
 useEffect(() => {
   storageSet(activeExecutionTradeKey(), activeExecutionTrade);
@@ -2648,11 +2703,16 @@ useEffect(() => {
   async function getMarketStats() {
     try {
       const row = await fetchBitgetTickerForSymbol(selectedSymbolRef.current);
+      const changeRaw = row?.priceChangePercent ?? row?.changeUtc24h ?? row?.changeUtc;
+      const open24h = Number(row?.open24h || row?.open || 0);
+      const lastPr = Number(row?.lastPr || row?.last || 0);
+      const fallbackChange = open24h > 0 && lastPr > 0 ? ((lastPr - open24h) / open24h) * 100 : null;
+      const finalChange = Number.isFinite(Number(changeRaw)) ? Number(changeRaw) : fallbackChange;
       setMarketStats({
         high: row?.high24h ? Number(row.high24h).toLocaleString() : "--",
         low: row?.low24h ? Number(row.low24h).toLocaleString() : "--",
         volume: row?.baseVolume ? Number(row.baseVolume).toLocaleString() : "--",
-        change: row?.priceChangePercent ? `${Number(row.priceChangePercent).toFixed(2)}%` : "--",
+        change: finalChange === null || Number.isNaN(finalChange) ? "--" : `${Number(finalChange).toFixed(2)}%`,
         funding: row?.fundingRate ? `${(Number(row.fundingRate) * 100).toFixed(4)}%` : "--",
       });
     } catch {}
@@ -3083,9 +3143,10 @@ useEffect(() => {
       activeOrders,
       activeExecutionTrade,
       alerts,
+      selectedSignal: signalFeedRows.find((row) => row.id === selectedSignalId) || null,
       selected,
     };
-  }, [livePrice, timeframe, session, sessionCountdown, bias, wolfMode, confidence, signalPlan, decisionPlan, structureState, liquidityState, triggerValidation, visualIntelligence, institutionalPrecision, v23EliteEngine, v25FinalBrain, managementBrain, marketStats, candlesSummary, backtestStats, learningWeights, orders, activeExecutionTrade, alerts, selectedOrder]);
+  }, [livePrice, timeframe, session, sessionCountdown, bias, wolfMode, confidence, signalPlan, decisionPlan, structureState, liquidityState, triggerValidation, visualIntelligence, institutionalPrecision, v23EliteEngine, v25FinalBrain, managementBrain, marketStats, candlesSummary, backtestStats, learningWeights, orders, activeExecutionTrade, alerts, signalFeedRows, selectedSignalId, selectedOrder]);
 
   const aiInsights = useMemo(() => {
     const notes: string[] = [];
@@ -4343,6 +4404,28 @@ useEffect(() => {
                     </div>
                   ))}
                 </div>
+
+                <div className={`${card} p-4 mb-4`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-bold text-gray-300">Signal Feed</h3>
+                    <span className="text-[10px] text-gray-500">{signalFeedRows.length} rows</span>
+                  </div>
+                  <div className="space-y-1 max-h-40 overflow-auto">
+                    {signalFeedRows.length === 0 && <p className="text-xs text-gray-500">No subscribed signal rows yet.</p>}
+                    {signalFeedRows.map((row) => (
+                      <button
+                        key={row.id}
+                        onClick={() => {
+                          setSelectedSignalId(row.id);
+                          setTimeframe(row.timeframe);
+                        }}
+                        className={`w-full text-left rounded-lg border px-2 py-1 text-[11px] ${selectedSignalId === row.id ? "border-yellow-600 bg-yellow-500/10" : "border-zinc-800 bg-black/30"}`}
+                      >
+                        {row.time} | {row.symbol} | {row.timeframe} | {row.mode} | {row.side} | {row.status} | {row.confidence}% | {row.reason}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </>
             )}
 
@@ -5453,6 +5536,24 @@ useEffect(() => {
                           <input type="number" min={1} max={100} value={externalAlertSettings.minSignalConfidence} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, minSignalConfidence: Math.max(1, Math.min(100, Number(e.target.value) || 62)) }))} className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
                           <input value={externalAlertSettings.telegramWebhook} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, telegramWebhook: e.target.value }))} placeholder="Telegram / bot webhook URL" className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
                           <input value={externalAlertSettings.emailWebhook} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, emailWebhook: e.target.value }))} placeholder="Email webhook URL" className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
+                          <div className="rounded-xl border border-zinc-800 bg-black/60 p-3 space-y-2">
+                            <p className="text-[11px] font-black text-yellow-500">Signal Subscriptions</p>
+                            <div className="grid grid-cols-4 gap-1 text-[10px]">
+                              {["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"].map((tf) => (
+                                <label key={tf} className="flex items-center gap-1">
+                                  <input type="checkbox" checked={signalSubscriptionSettings.timeframes[tf] !== false} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, timeframes: { ...p.timeframes, [tf]: e.target.checked } }))} />
+                                  <span>{tf}</span>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <label className="flex items-center gap-1"><input type="checkbox" checked={signalSubscriptionSettings.modes.SCALP} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, modes: { ...p.modes, SCALP: e.target.checked } }))} /><span>SCALP</span></label>
+                              <label className="flex items-center gap-1"><input type="checkbox" checked={signalSubscriptionSettings.modes.SWING} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, modes: { ...p.modes, SWING: e.target.checked } }))} /><span>SWING</span></label>
+                            </div>
+                            <input type="number" value={signalSubscriptionSettings.minConfidence} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, minConfidence: Math.max(1, Math.min(100, Number(e.target.value) || 70)) }))} className="w-full rounded-lg border border-zinc-800 bg-black px-2 py-1 text-xs" />
+                            <input type="number" value={signalSubscriptionSettings.maxFeedRows} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, maxFeedRows: Math.max(3, Math.min(50, Number(e.target.value) || 12)) }))} className="w-full rounded-lg border border-zinc-800 bg-black px-2 py-1 text-xs" />
+                            <label className="flex items-center justify-between"><span>Allow Multi-Timeframe Trades</span><input type="checkbox" checked={signalSubscriptionSettings.allowMultiTimeframeTrades} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, allowMultiTimeframeTrades: e.target.checked }))} /></label>
+                          </div>
                         </div>
                       </div>
                     )}
