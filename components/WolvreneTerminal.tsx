@@ -780,6 +780,9 @@ type SignalSubscriptionSettings = {
 
 type DecisionPlan = {
   id: string;
+  symbol: string;
+  timeframe: string;
+  mode: TradeMode;
   phase: DecisionPhase;
   direction: SignalDirection;
   confidence: number;
@@ -1595,6 +1598,12 @@ const impulseBoost =
 
     return {
       id,
+      symbol: selectedSymbol,
+      timeframe,
+      mode:
+        tradeModeSelection === "AUTO"
+          ? (SCALP_TIMEFRAMES.includes(timeframe as (typeof SCALP_TIMEFRAMES)[number]) ? "SCALP" : "SWING")
+          : tradeModeSelection,
       phase,
       direction,
       confidence: signalPlan.confidence,
@@ -1659,13 +1668,11 @@ const impulseBoost =
 
   const decisionPlan = activeDecision || rawDecisionPlan;
   const autoTradeMode = useMemo<TradeMode>(() => {
-    const highQuality = decisionPlan.quality >= Math.max(decisionSettings.executeConfidence, 86);
-    const executionSession = session.includes("London") || session.includes("New York");
-    const fastVolatility = candlesSummary.volatility === "HIGH" || candlesSummary.volatility === "NORMAL";
-    return highQuality && executionSession && fastVolatility ? "SCALP" : "SWING";
-  }, [decisionPlan.quality, decisionSettings.executeConfidence, session, candlesSummary.volatility]);
+    if (SCALP_TIMEFRAMES.includes(timeframe as (typeof SCALP_TIMEFRAMES)[number]) && !SWING_TIMEFRAMES.includes(timeframe as (typeof SWING_TIMEFRAMES)[number])) return "SCALP";
+    if (SWING_TIMEFRAMES.includes(timeframe as (typeof SWING_TIMEFRAMES)[number]) && !SCALP_TIMEFRAMES.includes(timeframe as (typeof SCALP_TIMEFRAMES)[number])) return "SWING";
+    return timeframe === "15m" ? "SCALP" : "SWING";
+  }, [timeframe]);
   const activeTradeMode: TradeMode = tradeModeSelection === "AUTO" ? autoTradeMode : tradeModeSelection;
-  const allowedModeTimeframes = activeTradeMode === "SCALP" ? SCALP_TIMEFRAMES : SWING_TIMEFRAMES;
   const signalLifecycleState = useMemo(() => {
     if (decisionPlan.phase === "SPAWNED") return "SPAWN";
     if (decisionPlan.phase === "VALIDATED") return "VALIDATE";
@@ -1737,9 +1744,9 @@ const impulseBoost =
       .map((item) => ({
         id: item.id,
         time: new Date(item.createdAt).toLocaleTimeString(),
-        symbol: selectedSymbol,
-        timeframe: item.id.split("-")[0] || timeframe,
-        mode: activeTradeMode,
+        symbol: item.symbol,
+        timeframe: item.timeframe,
+        mode: item.mode,
         side: item.direction as "LONG" | "SHORT",
         status: hasActiveExecution && item.phase === "EXECUTE" ? "MANAGE" : item.phase,
         confidence: item.quality,
@@ -3173,6 +3180,47 @@ useEffect(() => {
     return order.tps.find((tp) => tp.id === lineEditor.tpId) || null;
   }
 
+  const marketRegime = useMemo<"TRENDING" | "RANGING" | "CHOPPY" | "HIGH_VOL" | "LOW_VOL">(() => {
+    if (candlesSummary.volatility === "HIGH") return "HIGH_VOL";
+    if (candlesSummary.volatility === "LOW") return "LOW_VOL";
+    if (structureState.bias === "BULLISH" || structureState.bias === "BEARISH") return "TRENDING";
+    if (structureState.bias === "RANGING") return "RANGING";
+    return "CHOPPY";
+  }, [candlesSummary.volatility, structureState.bias]);
+
+  const mlState = useMemo(() => {
+    const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
+    const trendFeature = candlesSummary.trend === "BULLISH" ? 1 : candlesSummary.trend === "BEARISH" ? -1 : 0;
+    const momentumFeature = candlesSummary.impulse === "BULLISH" ? 1 : candlesSummary.impulse === "BEARISH" ? -1 : 0;
+    const volatilityFeature = candlesSummary.volatility === "HIGH" ? 1 : candlesSummary.volatility === "LOW" ? -1 : 0;
+    const rrFeature = decisionPlan.entry && decisionPlan.sl && decisionPlan.tp1 && decisionPlan.direction
+      ? Math.max(-2, Math.min(2, profitPct(decisionPlan.direction, decisionPlan.entry, decisionPlan.tp1) / Math.max(0.001, riskPct(decisionPlan.direction, decisionPlan.entry, decisionPlan.sl))))
+      : 0;
+    const structureFeature = structureState.event.includes("BOS") || structureState.event.includes("CHOCH") ? 1 : 0;
+    const longLogit = 0.7 * trendFeature + 0.6 * momentumFeature - 0.35 * volatilityFeature + 0.45 * rrFeature + 0.3 * structureFeature;
+    const shortLogit = -0.7 * trendFeature - 0.6 * momentumFeature - 0.35 * volatilityFeature + 0.45 * rrFeature + 0.3 * structureFeature;
+    const mlLongProb = Math.round(sigmoid(longLogit) * 100);
+    const mlShortProb = Math.round(sigmoid(shortLogit) * 100);
+    const expectedWinRate = Math.round((Math.max(mlLongProb, mlShortProb) + decisionPlan.quality) / 2);
+    const tradeQualityScore = Math.round(Math.max(0, Math.min(100, decisionPlan.quality * 0.7 + Math.max(mlLongProb, mlShortProb) * 0.3)));
+    return { mlLongProb, mlShortProb, expectedWinRate, tradeQualityScore };
+  }, [candlesSummary.trend, candlesSummary.impulse, candlesSummary.volatility, structureState.event, decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1, decisionPlan.direction, decisionPlan.quality]);
+
+  const unifiedTradingContext = useMemo(() => ({
+    symbol: selectedSymbol,
+    mode: activeTradeMode,
+    timeframe,
+    session,
+    livePrice,
+    signal: signalPlan,
+    decision: decisionPlan,
+    activeTrade: activeExecutionTradeView,
+    performance: { eliteAIScore, backtestStats, realAccuracyStats },
+    learningState: { learningStats, learningWeights },
+    mlState,
+    marketRegime,
+  }), [selectedSymbol, activeTradeMode, timeframe, session, livePrice, signalPlan, decisionPlan, activeExecutionTradeView, eliteAIScore, backtestStats, realAccuracyStats, learningStats, learningWeights, mlState, marketRegime]);
+
   const aiContext = useMemo(() => {
     const mark = livePrice || lastCandleRef.current?.close || 0;
     const activeOrders = orders.filter((order) => order.status !== "CLOSED");
@@ -3198,6 +3246,7 @@ useEffect(() => {
       v23EliteEngine,
       v25FinalBrain,
       managementBrain,
+      unifiedTradingContext,
       marketStats,
       candlesSummary,
       backtestStats,
@@ -3208,7 +3257,7 @@ useEffect(() => {
       selectedSignal: signalFeedRows.find((row) => row.id === selectedSignalId) || null,
       selected,
     };
-  }, [livePrice, timeframe, session, sessionCountdown, bias, wolfMode, confidence, signalPlan, decisionPlan, structureState, liquidityState, triggerValidation, visualIntelligence, institutionalPrecision, v23EliteEngine, v25FinalBrain, managementBrain, marketStats, candlesSummary, backtestStats, learningWeights, orders, activeExecutionTrade, alerts, signalFeedRows, selectedSignalId, selectedOrderId]);
+  }, [livePrice, timeframe, session, sessionCountdown, bias, wolfMode, confidence, signalPlan, decisionPlan, structureState, liquidityState, triggerValidation, visualIntelligence, institutionalPrecision, v23EliteEngine, v25FinalBrain, managementBrain, unifiedTradingContext, marketStats, candlesSummary, backtestStats, learningWeights, orders, activeExecutionTrade, alerts, signalFeedRows, selectedSignalId, selectedOrderId]);
 
   const aiInsights = useMemo(() => {
     const notes: string[] = [];
