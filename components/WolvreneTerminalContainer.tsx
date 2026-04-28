@@ -3378,12 +3378,10 @@ useEffect(() => {
     confidence: sanitizedBrainPayload.confidence,
     volatility: candlesSummary.volatility,
     funding: marketStats.funding,
-    volumeState: marketStats.volume,
-    marketState: brain.marketRegime,
     ordersCount: orders.length,
     alertsCount: alerts.length,
     candleTrend: candlesSummary.trend,
-  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, marketStats.volume, brain.marketRegime, candlesSummary.trend, marketStats.funding, orders.length, alerts.length]);
+  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, candlesSummary.trend, marketStats.funding, orders.length, alerts.length]);
 
   const activeTradeContext = useMemo<SelectedTradeContext>(() => {
     if (activeExecutionTradeView) {
@@ -3482,23 +3480,32 @@ useEffect(() => {
       }
     }
     return [
-      `Current Read: ${safeSummary}`,
+      `Summary: ${safeSummary}`,
       "",
-      `Trade Status: ${tradeStatus}`,
+      `Market Read: ${marketRead}`,
       "",
-      `Risk: ${riskLine}`,
+      `Intent Analysis:`,
+      ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
       "",
-      `What To Watch: ${watchLine}`,
+      `Scenarios:`,
+      ...(structured.scenarios && structured.scenarios.length
+        ? structured.scenarios.map((line, idx) => `${idx + 1}. ${line}`)
+        : [
+            "1. Primary Scenario: Waiting for confirmation-driven continuation.",
+            "2. Alternative Scenario: Rotation persists if trigger quality stays weak.",
+            "3. Trap Scenario: Fake breakout risk remains high."
+          ]),
       "",
-      `Decision / Management: ${structured.decision} | ${managementPlaybook.action} (${managementPlaybook.reason})`,
-      `Invalidation: ${structured.invalidation || sanitizedBrainPayload.invalidationReason}`,
-      `Market Snapshot: ${marketRead} | Confidence ${sanitizedBrainPayload.confidence}%`,
+      `Action: ${structured.decision}`,
+      `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
+      `Next Confirmation: ${structured.nextAction}`,
+      `Confidence Note: ${structured.confidenceNote}`,
     ].join("\n");
   }
 
-  async function sendAIMessage(text?: string) {
+  async function sendAIMessage(text?: string, quickIntent?: AIIntent) {
     const question = (text || aiInput).trim();
-    const intent = inferUserTradingIntent(question);
+    const intent = quickIntent || inferIntent(question);
     if (!question || aiThinking || aiInFlightRef.current) return;
     if (!hasValidAIPayload(sanitizedBrainPayload)) {
       const missingPayloadMessage: AIMessage = {
@@ -3538,9 +3545,6 @@ useEffect(() => {
         selectedTradeContext,
         activeTradeContext,
         liveContext: aiLiveContext,
-        signalContext,
-        riskContext,
-        managementPlaybook,
         mode: aiExplanationMode,
         requestId,
         history,
@@ -3588,14 +3592,14 @@ useEffect(() => {
   }
 
   function runAIQuickAction(action: "analyze" | "entry" | "risk" | "manage" | "session") {
-    const actionPrompts: Record<"analyze" | "entry" | "risk" | "manage" | "session", string> = {
-      analyze: "Analyze BTC now using current dashboard context.",
-      entry: "Best entry?",
-      risk: "Risk check",
-      manage: "Manage this trade",
-      session: "Session outlook",
+    const actionConfig: Record<"analyze" | "entry" | "risk" | "manage" | "session", { intent: AIIntent; prompt: string }> = {
+      analyze: { intent: "MARKET_ANALYSIS", prompt: "Analyze BTC now using current dashboard context." },
+      entry: { intent: "BEST_ENTRY", prompt: "What is the best entry right now?" },
+      risk: { intent: "RISK_CHECK", prompt: "Run a risk check on this environment and selected trade." },
+      manage: { intent: "MANAGE_TRADE", prompt: "Manage my selected trade with trade-specific guidance." },
+      session: { intent: "SESSION_OUTLOOK", prompt: "Give session outlook for current mode/timeframe." },
     };
-    sendAIMessage(actionPrompts[action]);
+    sendAIMessage(actionConfig[action].prompt, actionConfig[action].intent);
   }
 
   useEffect(() => {

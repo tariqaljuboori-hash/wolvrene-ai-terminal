@@ -9,9 +9,6 @@ type AskInput = {
   selectedTradeContext: SelectedTradeContext;
   activeTradeContext: SelectedTradeContext;
   liveContext: LiveContext;
-  signalContext: AICommandPayload["signalContext"];
-  riskContext: AICommandPayload["riskContext"];
-  managementPlaybook: AICommandPayload["managementPlaybook"];
   mode: ExplanationMode;
   requestId: number;
   history: Array<{ role: "user" | "assistant"; text: string }>;
@@ -44,13 +41,10 @@ export async function askWolvreneAICore(input: AskInput): Promise<{ structured: 
   });
   const aiPayload: AICommandPayload = {
     intent: input.intent,
-    brainContext: input.payload,
+    brain: input.payload,
     selectedTradeContext: input.selectedTradeContext,
     activeTradeContext: input.activeTradeContext,
     liveContext: input.liveContext,
-    signalContext: input.signalContext,
-    riskContext: input.riskContext,
-    managementPlaybook: input.managementPlaybook,
   };
   const res = await fetch("/api/ai", {
     method: "POST",

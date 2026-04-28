@@ -74,8 +74,6 @@ export type LiveContext = {
   confidence: number;
   volatility: string;
   funding: string;
-  volumeState: string;
-  marketState: string;
   ordersCount: number;
   alertsCount: number;
   candleTrend: string;
@@ -83,37 +81,10 @@ export type LiveContext = {
 
 export type AICommandPayload = {
   intent: string;
-  brainContext: SanitizedBrainPayload;
+  brain: SanitizedBrainPayload;
   selectedTradeContext: SelectedTradeContext;
   activeTradeContext: SelectedTradeContext;
   liveContext: LiveContext;
-  signalContext: {
-    phase: string;
-    direction: string | null;
-    confidence: number;
-    qualityScore: number;
-    qualityGrade: string;
-    entryGrade: string;
-    confirmationCount: number;
-    blockedReason: string;
-    invalidationReason: string;
-    nextConfirmation: string;
-  };
-  riskContext: {
-    risk: string;
-    riskReason: string;
-    riskEngine: SanitizedBrainPayload["riskEngine"];
-  };
-  managementPlaybook: {
-    action: string;
-    reason: string;
-    protectBE: boolean;
-    trailSL: boolean;
-    scaleOut: boolean;
-    earlyExit: boolean;
-    exitReason: string;
-    nextCheckpoint: string;
-  };
 };
 
 export function buildSanitizedBrainPayload(brain: UnifiedBrainOutput): SanitizedBrainPayload {

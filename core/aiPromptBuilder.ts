@@ -17,7 +17,7 @@ type PromptInput = {
 
 export function buildWolvreneAIPrompt(input: PromptInput): string {
   const { payload, userQuestion, explanationMode } = input;
-  const { intent, brainContext, selectedTradeContext, activeTradeContext, liveContext, signalContext, riskContext, managementPlaybook } = payload;
+  const { intent, brain, selectedTradeContext, activeTradeContext, liveContext } = payload;
   const tone =
     explanationMode === "Beginner"
       ? "Use clear educational language."
@@ -47,22 +47,15 @@ export function buildWolvreneAIPrompt(input: PromptInput): string {
     "- CUSTOM: answer user question directly and infer best matching intent using context.",
     "For MANAGE_TRADE or RISK_CHECK with selected trade context, first analyze entry vs mark, PnL/ROI, SL distance, TP availability, management action, invalidation, and next condition.",
     "Do not respond only with generic No Trade / Wait when selected trade context exists.",
-    "If question is about trade/position/hold/close/manage/risk/profit/loss, prioritize selectedTradeContext first.",
-    "If question is about market/setup/signal/session, prioritize brainContext + liveContext.",
-    "Never output 'no context' when payload exists.",
-    "Do not output placeholder lines like 'No additional reasoning from provider'.",
     "Safety: AI is explainer-only, does not create signals, execute trades, or override UnifiedWolvreneBrain.",
     "Return strict object fields for renderer: summary, reasoning, decision, nextAction, warnings, invalidation, confidenceNote.",
     tone,
     `Intent: ${intent}`,
     `User question: ${userQuestion}`,
     `AI payload: ${JSON.stringify(payload)}`,
-    `Brain context: ${JSON.stringify(brainContext)}`,
+    `Sanitized payload: ${JSON.stringify(brain)}`,
     `Selected trade context: ${JSON.stringify(selectedTradeContext)}`,
     `Active trade context: ${JSON.stringify(activeTradeContext)}`,
     `Live context: ${JSON.stringify(liveContext)}`,
-    `Signal context: ${JSON.stringify(signalContext)}`,
-    `Risk context: ${JSON.stringify(riskContext)}`,
-    `Management playbook: ${JSON.stringify(managementPlaybook)}`,
   ].join("\n");
 }
