@@ -3477,7 +3477,6 @@ function inferIntent(question: string): AIIntent {
         </div>
       </div>
     );
-  };
 
   const editorCurrentPrice = useMemo(() => {
     if (!lineEditor) return 0;
