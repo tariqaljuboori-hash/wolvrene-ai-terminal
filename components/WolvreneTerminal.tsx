@@ -2815,7 +2815,23 @@ function inferIntent(question: string): AIIntent {
   ) {
     return "market";
   }
+function inferIntent(question: string): AIIntent {
+  const q = question.toLowerCase();
 
+  if (q.includes("long") || q.includes("short") || q.includes("buy") || q.includes("sell") || q.includes("entry")) {
+    return "trade";
+  }
+
+  if (q.includes("risk") || q.includes("sl") || q.includes("stop") || q.includes("leverage")) {
+    return "risk";
+  }
+
+  if (q.includes("trend") || q.includes("structure") || q.includes("liquidity") || q.includes("session")) {
+    return "market";
+  }
+
+  return "general";
+}
   return "general";
 }
   async function sendAIMessage(text?: string) {
