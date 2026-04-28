@@ -2783,7 +2783,41 @@ useEffect(() => {
 
     return `${header}\n\nAI read: ${aiInsights[0] || "Waiting for cleaner context."}\n\nCurrent mark: ${formatPrice(mark)}.\nActive orders: ${activeOrders}. Alerts: ${activeAlerts}.\nNext action: wait for a clean trigger, then manage risk through Entry / SL / TP lines.`;
   }
+function inferIntent(question: string): AIIntent {
+  const q = question.toLowerCase();
 
+  if (
+    q.includes("entry") ||
+    q.includes("enter") ||
+    q.includes("buy") ||
+    q.includes("sell") ||
+    q.includes("long") ||
+    q.includes("short")
+  ) {
+    return "trade";
+  }
+
+  if (
+    q.includes("risk") ||
+    q.includes("sl") ||
+    q.includes("stop") ||
+    q.includes("leverage") ||
+    q.includes("position")
+  ) {
+    return "risk";
+  }
+
+  if (
+    q.includes("structure") ||
+    q.includes("trend") ||
+    q.includes("liquidity") ||
+    q.includes("session")
+  ) {
+    return "market";
+  }
+
+  return "general";
+}
   async function sendAIMessage(text?: string) {
     const question = (text || aiInput).trim();
     if (!question || aiThinking) return;
