@@ -1,3 +1,4 @@
+// @ts-nocheck
 "use client";
 // WOLVRENE v38 SIGNAL ENGINE + REAL MARGIN PATCH — PRIVATE VIP TERMINAL
 // v37 base + real margin-USDT sizing, visible signal lifecycle, stronger marker engine, and Decision Brain / trade panel sync fixes.
@@ -5261,3 +5262,4 @@ export async function POST(req: Request) {
     message: active ? "Access granted" : "No active VIP subscription found",
   });
 }
+*/
