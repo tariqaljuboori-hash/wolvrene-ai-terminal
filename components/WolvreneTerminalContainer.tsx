@@ -1,6 +1,6 @@
 "use client";
-// WOLVRENE v38 SIGNAL ENGINE + REAL MARGIN PATCH — PRIVATE VIP TERMINAL
-// v37 base + real margin-USDT sizing, visible signal lifecycle, stronger marker engine, and Decision Brain / trade panel sync fixes.
+// WOLVRENE v37 UNIFIED PRECISION PATCH — PRIVATE VIP TERMINAL
+// v36 base + unified settings persistence, USDT sizing, execute-only trade data, safer AI context, and cleaner live trade management.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -8,10 +8,30 @@ import {
   createChart,
   IChartApi,
   ISeriesApi,
+  Time,
 } from "lightweight-charts";
 import { getBitgetCandles, getBitgetTickerStats, TF_SECONDS, TIMEFRAMES } from "@/lib/bitget";
 import { createOrderFromPrice, formatPrice, profitPct, riskPct } from "@/lib/tradingMath";
 import { loadJson, saveJson } from "@/lib/storage";
+import { runUnifiedBrain } from "@/core/unifiedBrain";
+import { buildRawDecisionPlan } from "@/core/decisionEngine";
+import { buildSanitizedBrainPayload, hasValidAIPayload, type LiveContext, type SelectedTradeContext } from "@/core/aiPayload";
+import { askWolvreneAICore, buildAIFailureFallback, getAICacheKey } from "@/core/aiCore";
+import { guardWolvreneAIResponse, type WolvreneStructuredResponse } from "@/core/aiResponseGuard";
+import type { AIIntent, ExplanationMode } from "@/core/aiPromptBuilder";
+import { evaluateExecutionReadiness } from "@/core/executionEngine";
+import { appendTradeLog, readTradeLog, type LoggedTrade } from "@/core/tradeLogger";
+import { buildStrategyPerformance } from "@/core/performanceEngine";
+import { deriveAdaptiveWeights } from "@/core/adaptiveEngine";
+import { buildDiscordSignalPayload, sendDiscordSignal } from "@/core/discordEngine";
+import {
+  calcBaseSizeFromUsd,
+  calcOrderMarginUsd,
+  calcOrderPnLUsd,
+  calcOrderRoiPct,
+  clampLeverage,
+  normalizeOrderFinancials,
+} from "@/lib/tradeCalculations";
 import type {
   Candle,
   ChartSettings,
@@ -137,6 +157,22 @@ type DynamicTradePlan = {
   earlyRiskCut: boolean;
 };
 
+type ClosedEliteResult = {
+  exit: number;
+  pnl: number;
+  roi: number;
+  result: EliteJournalEntry["result"];
+  closeReason: EliteJournalEntry["closeReason"];
+};
+
+type ChartCandle = {
+  time: Time;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
 type SessionSniperState = {
   session: string;
   quality: number;
@@ -144,6 +180,56 @@ type SessionSniperState = {
   allowSignal: boolean;
   reason: string;
 };
+
+function readStoredAccessEmail() {
+  if (typeof window === "undefined") return "";
+  const raw = localStorage.getItem("wolvrene_access_email");
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "string" ? parsed : "";
+  } catch {
+    return raw;
+  }
+}
+
+function readStoredAccessGranted() {
+  if (typeof window === "undefined") return false;
+  const raw = localStorage.getItem("wolvrene_access_granted");
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed === true || parsed === "true";
+  } catch {
+    return raw === "true";
+  }
+}
+
+function resolveEliteJournalClose(
+  entry: EliteJournalEntry,
+  markPrice: number,
+  plan: DynamicTradePlan
+): ClosedEliteResult | null {
+  const isLong = entry.side === "LONG";
+  const hitTP = isLong ? markPrice >= plan.tp1 : markPrice <= plan.tp1;
+  const hitSL = isLong ? markPrice <= plan.dynamicSL : markPrice >= plan.dynamicSL;
+
+  if (!hitTP && !hitSL && !plan.earlyRiskCut) return null;
+
+  const exit = markPrice;
+  const { pnl, roi } = calcJournalPnL(entry, exit);
+  const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
+  const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
+  const closeReason: EliteJournalEntry["closeReason"] = hitTP
+    ? "TP_HIT"
+    : isBE
+    ? "BE"
+    : plan.earlyRiskCut
+    ? "EARLY_EXIT"
+    : "SL_HIT";
+
+  return { exit, pnl, roi, result, closeReason };
+}
 
 function storageGet<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -162,6 +248,25 @@ function storageSet<T>(key: string, value: T) {
   } catch {
     // local storage can fail in private mode or when quota is full
   }
+}
+
+function normalizeEpochMs(value: number | null | undefined) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return Date.now();
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+}
+
+function toChartEpochSec(value: number | null | undefined) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return Math.floor(Date.now() / 1000);
+  return numeric > 1_000_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+}
+
+function toChartCandle(candle: Candle): ChartCandle {
+  return {
+    ...candle,
+    time: candle.time as Time,
+  };
 }
 
 function mergeCandleHistory(oldData: Candle[], freshData: Candle[]) {
@@ -197,6 +302,12 @@ function eliteJournalKey() {
 }
 function signalMarkersKey(symbol: string, tf: string) {
   return `wolvrene_signal_markers_${symbol}_${tf}`;
+}
+function activeExecutionTradeKey() {
+  return "wolvrene_active_execution_trade_v1";
+}
+function tradeMarkersKey(symbol: string, tf: string, mode: TradeMode) {
+  return `wolvrene_trade_markers_${symbol}_${tf}_${mode}`;
 }
 function learningStatsKey() {
   return "wolvrene_learning_stats_v35";
@@ -352,33 +463,103 @@ function runEliteAIScore(input: {
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
-function runEliteBacktest(candles: Candle[], signals: SignalMarker[]) {
+function runEliteBacktest(candles: Candle[], signals: SignalMarker[], symbol: string, selectedMode: "SCALP" | "SWING", selectedTimeframe: string) {
   const visible = signals.filter((s) => Number.isFinite(s.price) && s.confidence >= PRECISION_RULES.minWatchQuality);
   let wins = 0;
   let losses = 0;
+  let breakevens = 0;
   let totalScore = 0;
 
   visible.forEach((signal) => {
+    const structureScore = Math.max(0, Math.min(100, Math.round(signal.confidence * 0.9)));
+    const liquidityScore = Math.max(0, Math.min(100, Math.round(signal.confidence * 0.85)));
+    const triggerScore = Math.max(0, Math.min(100, Math.round(signal.confidence * 0.95)));
+    const brain = runUnifiedBrain({
+      symbol,
+      selectedMode,
+      selectedTimeframe,
+      session: "Backtest",
+      livePrice: signal.price,
+      activeTrade: null,
+      tradeMarkers: [],
+      draftUsd: "100",
+      candlesSummary: { volatility: "NORMAL", trend: signal.direction === "LONG" ? "BULLISH" : "BEARISH", impulse: signal.direction === "LONG" ? "BULLISH" : "BEARISH" },
+      structureScore,
+      liquidityScore,
+      triggerScore,
+      signalPlan: {
+        state: signal.direction === "LONG" ? "WATCH LONG" : "WATCH SHORT",
+        direction: signal.direction,
+        confidence: signal.confidence,
+        entry: signal.price,
+        sl: null,
+        tp1: null,
+        tp2: null,
+        tp3: null,
+        reason: "Backtest signal",
+      },
+      decisionPlan: {
+        phase: "EXECUTE",
+        direction: signal.direction,
+        quality: signal.confidence,
+        entry: signal.price,
+        sl: null,
+        tp1: null,
+        tp2: null,
+        tp3: null,
+        reason: "Backtest decision",
+      },
+    });
+    if (brain.phase !== "EXECUTE" && brain.phase !== "VALIDATED" && brain.phase !== "WATCH") return;
     totalScore += signal.confidence;
     const idx = candles.findIndex((c) => Number(c.time) >= Number(signal.time));
-    const future = idx >= 0 ? candles.slice(idx + 1, idx + 16) : [];
+    const future = idx >= 0 ? candles.slice(idx + 1, idx + 30) : [];
     if (!future.length) return;
 
     const entry = signal.price;
-    const move = future[future.length - 1].close - entry;
-    const win = signal.direction === "LONG" ? move > 0 : move < 0;
-    if (win) wins += 1;
+    const riskDistance = Math.max(entry * 0.004, 0.0001);
+    const isLong = signal.direction === "LONG";
+    const sl = isLong ? entry - riskDistance : entry + riskDistance;
+    const tp1 = isLong ? entry + riskDistance : entry - riskDistance;
+    const tp2 = isLong ? entry + riskDistance * 2 : entry - riskDistance * 2;
+    const tp3 = isLong ? entry + riskDistance * 3 : entry - riskDistance * 3;
+    let status: "OPEN" | "TP1_HIT" | "TP2_HIT" | "RUNNER" | "CLOSED_TP" | "CLOSED_SL" = "OPEN";
+    let beActive = false;
+
+    for (const candle of future) {
+      const hitSL = isLong ? candle.low <= sl : candle.high >= sl;
+      const hitTP1 = isLong ? candle.high >= tp1 : candle.low <= tp1;
+      const hitTP2 = isLong ? candle.high >= tp2 : candle.low <= tp2;
+      const hitTP3 = isLong ? candle.high >= tp3 : candle.low <= tp3;
+      if (hitTP1) {
+        status = "TP1_HIT";
+        beActive = true;
+      }
+      if (hitTP2) status = "TP2_HIT";
+      if (hitTP3) {
+        status = "CLOSED_TP";
+        break;
+      }
+      if (hitSL) {
+        status = beActive ? "RUNNER" : "CLOSED_SL";
+        break;
+      }
+    }
+
+    if (status === "CLOSED_TP") wins += 1;
+    else if (status === "RUNNER" || status === "TP1_HIT" || status === "TP2_HIT") breakevens += 1;
     else losses += 1;
   });
 
-  const total = wins + losses;
+  const total = wins + losses + breakevens;
   return {
     totalSignals: visible.length,
     tested: total,
     wins,
     losses,
+    breakevens,
     winRate: total ? Math.round((wins / total) * 100) : 0,
-    profitFactor: losses ? Number((wins / losses).toFixed(2)) : wins > 0 ? 99 : 0,
+    profitFactor: losses ? Number((wins / losses).toFixed(2)) : wins > 0 ? Number(wins.toFixed(2)) : 0,
     avgScore: visible.length ? Math.round(totalScore / visible.length) : 0,
   };
 }
@@ -386,10 +567,13 @@ function runEliteBacktest(candles: Candle[], signals: SignalMarker[]) {
 
 const BITGET_GRANULARITY: Record<string, string> = {
   "1m": "1m",
+  "3m": "3m",
   "5m": "5m",
   "15m": "15m",
+  "30m": "30m",
   "1H": "1H",
   "4H": "4H",
+  "1D": "1D",
 };
 
 async function fetchBitgetCandlesForSymbol(timeframe: string, symbol: string): Promise<Candle[]> {
@@ -400,7 +584,7 @@ async function fetchBitgetCandlesForSymbol(timeframe: string, symbol: string): P
   const rows = Array.isArray(json?.data) ? json.data : [];
 
   return rows
-    .map((row: any[]) => ({
+    .map((row: unknown[]) => ({
       time: Math.floor(Number(row?.[0]) / 1000),
       open: Number(row?.[1]),
       high: Number(row?.[2]),
@@ -437,6 +621,7 @@ type AIMessage = {
   role: "user" | "assistant";
   text: string;
   time: string;
+  structured?: WolvreneStructuredResponse;
 };
 
 type AITab = "chat" | "insights" | "trade" | "context" | "analytics" | "learning";
@@ -563,6 +748,56 @@ type LiquidityBias = "BUY_SIDE_TAKEN" | "SELL_SIDE_TAKEN" | "BALANCED" | "WAITIN
 type TriggerQuality = "NONE" | "WEAK" | "VALID" | "STRONG" | "SNIPER";
 type ManagementAction = "WAIT" | "HOLD" | "PROTECT_BE" | "TRAIL" | "SCALE_OUT" | "EARLY_EXIT" | "CANCEL";
 type DecisionPhase = "SCANNING" | "SPAWNED" | "VALIDATED" | "EXECUTE" | "MANAGE" | "EXIT" | "FILTERED" | "NO_TRADE";
+type TradeMode = "SCALP" | "SWING";
+type TradeModeSelection = TradeMode | "AUTO";
+type ExecutionTradeStatus = "OPEN" | "TP1_HIT" | "TP2_HIT" | "RUNNER" | "BREAKEVEN" | "CLOSING" | "CLOSED_TP" | "CLOSED_SL" | "CLOSED_MANUAL" | "INVALIDATED";
+type SmartExecutionTrade = {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  mode: TradeMode;
+  side: "LONG" | "SHORT";
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  size: number;
+  leverage: number;
+  margin: number;
+  confidence: number;
+  reason: string;
+  openedAt: number;
+  status: ExecutionTradeStatus;
+  invalidation: number;
+  tp1Hit: boolean;
+  tp2Hit: boolean;
+  tp3Hit: boolean;
+  partial1Done: boolean;
+  partial2Done: boolean;
+  maxDrawdown: number;
+  bestExcursion: number;
+};
+type TradeChartMarker = {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  mode: TradeMode;
+  side: "LONG" | "SHORT";
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  confidence: number;
+  entryGrade: string;
+  reason: string;
+  openedAt: number;
+  closedAt?: number;
+  result?: "WIN" | "LOSS" | "BE" | "INVALIDATED";
+  pnl?: number;
+  closeReason?: string;
+};
 
 type MarketStructureState = {
   bias: StructureBias;
@@ -617,9 +852,21 @@ type DecisionSettings = {
   requireTriggerForExecute: boolean;
   proSignalOnly: boolean;
 };
+type SignalSubscriptionSettings = {
+  timeframes: Record<string, boolean>;
+  modes: Record<"SCALP" | "SWING", boolean>;
+  minConfidence: number;
+  cooldownSeconds: number;
+  maxFeedRows: number;
+  allowMultiTimeframeTrades: boolean;
+  executionProfile: "CONSERVATIVE" | "BALANCED" | "AGGRESSIVE";
+};
 
 type DecisionPlan = {
   id: string;
+  symbol: string;
+  timeframe: string;
+  mode: TradeMode;
   phase: DecisionPhase;
   direction: SignalDirection;
   confidence: number;
@@ -649,6 +896,15 @@ const defaultLearningWeights: LearningWeights = { session: {}, timeframe: {}, bi
 const defaultTradeManagerSettings: TradeManagerSettings = { autoMoveBE: true, autoPartialClose: true, trailingEnabled: true, trailingRMultiple: 1.4, structureWeaknessWarnings: true };
 const defaultExternalAlertSettings: ExternalAlertSettings = { discordWebhook: "", telegramWebhook: "", emailWebhook: "", enabled: false, discordSignalOnly: true, autoDiscordSignals: false, minSignalConfidence: 86 };
 const defaultDecisionSettings: DecisionSettings = { enabled: true, holdBars: 10, executeConfidence: 86, validateConfidence: 72, spawnConfidence: 58, cancelOnOppositeShift: true, showDecisionPanel: true, requireTriggerForExecute: true, proSignalOnly: true };
+const defaultSignalSubscriptionSettings: SignalSubscriptionSettings = {
+  timeframes: { "1m": false, "3m": false, "5m": true, "15m": true, "30m": false, "1H": false, "4H": false, "1D": false },
+  modes: { SCALP: true, SWING: true },
+  minConfidence: 70,
+  cooldownSeconds: 60,
+  maxFeedRows: 12,
+  allowMultiTimeframeTrades: false,
+  executionProfile: "BALANCED",
+};
 
 type WolvreneUserPrefs = {
   selectedSymbol: string;
@@ -678,39 +934,39 @@ const defaultUserPrefs: WolvreneUserPrefs = {
   hideUI: false,
 };
 
-function clampLeverage(value: string | number) {
-  return Math.max(1, Math.min(125, Number(value) || 1));
-}
-function calcBaseSizeFromUsd(notionalUsd: number, price: number) {
-  if (!Number.isFinite(notionalUsd) || !Number.isFinite(price) || price <= 0) return 0;
-  return Math.max(0, notionalUsd / price);
-}
-function calcUsdFromBaseSize(size: number, price: number) {
-  if (!Number.isFinite(size) || !Number.isFinite(price) || price <= 0) return 0;
-  return Math.max(0, size * price);
-}
-function calcNotionalFromMargin(marginUsd: number, leverage: number) {
-  if (!Number.isFinite(marginUsd) || !Number.isFinite(leverage)) return 0;
-  return Math.max(0, marginUsd * Math.max(1, leverage));
-}
+const SCALP_TIMEFRAMES = ["1m", "3m", "5m", "15m"] as const;
+const SWING_TIMEFRAMES = ["15m", "30m", "1H", "4H", "1D"] as const;
+
 function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
   return Boolean(plan?.direction && (plan.phase === "EXECUTE" || plan.phase === "MANAGE" || plan.phase === "EXIT"));
 }
 
 export default function WolvreneTerminal() {
-  const [accessStatus, setAccessStatus] = useState<AccessStatus>("checking");
-  const [accessEmail, setAccessEmail] = useState("");
+  const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
+  const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
+    const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
+    const cachedEmail = storageGet("wolvrene_access_email", "");
+    const hasCachedAccess = cachedAccess === true || cachedAccess === "true";
+    return hasCachedAccess && cachedEmail ? "granted" : "locked";
+  });
   const [accessError, setAccessError] = useState("");
   const [accessLoading, setAccessLoading] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
+  const [hydrated] = useState(true);
   const [timeframe, setTimeframe] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).timeframe || "15m");
+  const [tradeModeSelection, setTradeModeSelection] = useState<TradeModeSelection>("AUTO");
   const [selectedSymbol, setSelectedSymbol] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).selectedSymbol || TRADE_SYMBOLS[0].symbol);
   const [assetMenuOpen, setAssetMenuOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"dashboard" | "analytics" | "journal" | "backtest" | "pro">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).terminalTab || "dashboard");
   const [backtestRange, setBacktestRange] = useState<100 | 500 | 1000>(500);
-  const [eliteJournal, setEliteJournal] = useState<EliteJournalEntry[]>([]);
-  const [learningStats, setLearningStats] = useState<LearningStats>(defaultLearningStats());
-  const [settings, setSettings] = useState<ChartSettings>(defaultSettings);
+  const [eliteJournal, setEliteJournal] = useState<EliteJournalEntry[]>(() =>
+    storageGet<EliteJournalEntry[]>(eliteJournalKey(), [])
+  );
+  const [learningStats, setLearningStats] = useState<LearningStats>(() =>
+    storageGet<LearningStats>(learningStatsKey(), defaultLearningStats())
+  );
+  const [settings, setSettings] = useState<ChartSettings>(() =>
+    loadJson("wolvreneChartSettings", defaultSettings)
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -729,31 +985,76 @@ export default function WolvreneTerminal() {
   ]);
   const [aiThinking, setAiThinking] = useState(false);
   const [aiBridgeStatus, setAiBridgeStatus] = useState<"ready" | "connected" | "missing_key" | "error">("ready");
+  const [aiExplanationMode, setAiExplanationMode] = useState<ExplanationMode>("Trader");
+  const [lastValidAIResponse, setLastValidAIResponse] = useState<WolvreneStructuredResponse | null>(null);
 
-  const [orders, setOrders] = useState<TradeOrder[]>([]);
-  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [orders, setOrders] = useState<TradeOrder[]>(() =>
+    loadJson("wolvreneOrdersV15", [] as TradeOrder[]).map((order) =>
+      normalizeOrderFinancials(order)
+    )
+  );
+  const [alerts, setAlerts] = useState<PriceAlert[]>(() =>
+    loadJson("wolvreneAlertsV15", [] as PriceAlert[])
+  );
   const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null);
+  const [activeExecutionTrade, setActiveExecutionTrade] = useState<SmartExecutionTrade | null>(() => {
+    const stored = storageGet<SmartExecutionTrade | null>(activeExecutionTradeKey(), null);
+    if (!stored) return null;
+    return { ...stored, openedAt: normalizeEpochMs(stored.openedAt) };
+  });
+  const [lastClosedExecutionTrade, setLastClosedExecutionTrade] = useState<SmartExecutionTrade | null>(null);
+  const [tradeMarkers, setTradeMarkers] = useState<TradeChartMarker[]>(() =>
+    storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe, tradeModeSelection === "SWING" ? "SWING" : "SCALP"), [])
+  );
+  const [tradeLog, setTradeLog] = useState<LoggedTrade[]>(() => readTradeLog());
+  const [discordSentState, setDiscordSentState] = useState(false);
+  const [tradeRecalcCooldownCycles, setTradeRecalcCooldownCycles] = useState(0);
   const [lineEditor, setLineEditor] = useState<LineEditor>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
-  const [signalMarkers, setSignalMarkers] = useState<SignalMarker[]>([]);
+  const [signalMarkers, setSignalMarkers] = useState<SignalMarker[]>(() =>
+    storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
+  );
   const [recentCandles, setRecentCandles] = useState<Candle[]>([]);
-  const [structuredJournal, setStructuredJournal] = useState<StructuredJournalEntry[]>([]);
-  const [learningWeights, setLearningWeights] = useState<LearningWeights>(defaultLearningWeights);
-  const [tradeManagerSettings, setTradeManagerSettings] = useState<TradeManagerSettings>(defaultTradeManagerSettings);
-  const [externalAlertSettings, setExternalAlertSettings] = useState<ExternalAlertSettings>(defaultExternalAlertSettings);
-  const [decisionSettings, setDecisionSettings] = useState<DecisionSettings>(defaultDecisionSettings);
+  const [structuredJournal, setStructuredJournal] = useState<StructuredJournalEntry[]>(() =>
+    loadJson("wolvreneStructuredJournalV1", [] as StructuredJournalEntry[])
+  );
+  const [learningWeights, setLearningWeights] = useState<LearningWeights>(() =>
+    loadJson("wolvreneLearningWeightsV1", defaultLearningWeights)
+  );
+  const [tradeManagerSettings, setTradeManagerSettings] = useState<TradeManagerSettings>(() => ({
+    ...defaultTradeManagerSettings,
+    ...loadJson("wolvreneTradeManagerSettingsV1", defaultTradeManagerSettings),
+  }));
+  const [externalAlertSettings, setExternalAlertSettings] = useState<ExternalAlertSettings>(() => ({
+    ...defaultExternalAlertSettings,
+    ...loadJson("wolvreneExternalAlertSettingsV1", defaultExternalAlertSettings),
+  }));
+  const [decisionSettings, setDecisionSettings] = useState<DecisionSettings>(() => ({
+    ...defaultDecisionSettings,
+    ...loadJson("wolvreneDecisionSettingsV1", defaultDecisionSettings),
+  }));
+  const [signalSubscriptionSettings, setSignalSubscriptionSettings] = useState<SignalSubscriptionSettings>(() => ({
+    ...defaultSignalSubscriptionSettings,
+    ...loadJson("wolvreneSignalSubscriptionSettingsV1", defaultSignalSubscriptionSettings),
+  }));
   const [activeDecision, setActiveDecision] = useState<DecisionPlan | null>(null);
-  const [decisionHistory, setDecisionHistory] = useState<DecisionPlan[]>([]);
+  const [decisionHistory, setDecisionHistory] = useState<DecisionPlan[]>(() =>
+    loadJson("wolvreneDecisionHistoryV1", [] as DecisionPlan[])
+  );
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
   const [tradeWarnings, setTradeWarnings] = useState<string[]>([]);
 
   const [session, setSession] = useState("Loading...");
   const [clock, setClock] = useState("--:--:--");
   const [sessionCountdown, setSessionCountdown] = useState("--:--");
+  const [lastEngineHeartbeat, setLastEngineHeartbeat] = useState(() => new Date().toLocaleTimeString());
   const [wolfMode, setWolfMode] = useState("STALKING");
   const [bias, setBias] = useState("NEUTRAL");
   const [livePrice, setLivePrice] = useState<number | null>(null);
   const [journalNote, setJournalNote] = useState("");
-  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>(() =>
+    loadJson("wolvreneJournal", [] as JournalEntry[])
+  );
   const [contextMenu, setContextMenu] = useState({ open: false, x: 0, y: 0, price: 0 });
 
   const [orderSide, setOrderSide] = useState<Exclude<Direction, null>>(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).orderSide || "LONG");
@@ -790,6 +1091,9 @@ export default function WolvreneTerminal() {
   const lastTickMsRef = useRef<number>(0);
   const aiScrollRef = useRef<HTMLDivElement>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement>(null);
+  const aiRequestSeqRef = useRef(0);
+  const aiInFlightRef = useRef(false);
+  const lastAIRequestKeyRef = useRef("");
   const signalKeyRef = useRef<string>("");
   const externalAlertBusyRef = useRef(false);
   const lastDiscordSignalKeyRef = useRef("");
@@ -797,17 +1101,35 @@ export default function WolvreneTerminal() {
   const smartSignalRef = useRef<SmartSignalMemory | null>(null);
   const smartSignalCooldownRef = useRef(0);
   const visualSignalKeyRef = useRef("");
+  const lastExecutionStatusRef = useRef<ExecutionTradeStatus | null>(null);
+  const signalMarkerDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
-    setEliteJournal(storageGet<EliteJournalEntry[]>(eliteJournalKey(), []));
-    setLearningStats(storageGet<LearningStats>(learningStatsKey(), defaultLearningStats()));
+    const timer = window.setTimeout(() => {
+      const cachedEmail = readStoredAccessEmail();
+      const hasCachedAccess = readStoredAccessGranted();
+      setAccessEmail(cachedEmail);
+      setAccessStatus(hasCachedAccess && cachedEmail ? "granted" : "locked");
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
-  setSignalMarkers(
-    storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
-  );
-}, [selectedSymbol, timeframe]);
+    const timer = window.setTimeout(() => {
+      setSignalMarkers(
+        storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedSymbol, timeframe]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const modeBucket: TradeMode = tradeModeSelection === "SWING" ? "SWING" : "SCALP";
+      setTradeMarkers(storageGet<TradeChartMarker[]>(tradeMarkersKey(selectedSymbol, timeframe, modeBucket), []));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedSymbol, timeframe, tradeModeSelection]);
 
 useEffect(() => {
   if (!hydrated) return;
@@ -816,18 +1138,34 @@ useEffect(() => {
     signalMarkers.slice(-PRECISION_RULES.maxSignalMemory)
   );
 }, [signalMarkers, selectedSymbol, timeframe, hydrated]);
-  useEffect(() => {
-    const cachedAccess = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_granted") : null;
-    const cachedEmail = typeof window !== "undefined" ? localStorage.getItem("wolvrene_access_email") : null;
 
-    if (cachedAccess === "true" && cachedEmail) {
-      setAccessEmail(cachedEmail);
-      setAccessStatus("granted");
-    } else {
-      setAccessStatus("locked");
-    }
+useEffect(() => {
+  if (!hydrated) return;
+  const modeBucket: TradeMode = tradeModeSelection === "SWING" ? "SWING" : "SCALP";
+  storageSet(tradeMarkersKey(selectedSymbol, timeframe, modeBucket), tradeMarkers);
+}, [tradeMarkers, selectedSymbol, timeframe, tradeModeSelection, hydrated]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setLastEngineHeartbeat(new Date().toLocaleTimeString());
+    }, 3000);
+    return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLastEngineHeartbeat(new Date().toLocaleTimeString());
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [timeframe, selectedSymbol]);
+
+  useEffect(() => {
+    if (!livePrice || tradeRecalcCooldownCycles <= 0) return;
+    const timer = window.setTimeout(() => {
+      setTradeRecalcCooldownCycles((prev) => Math.max(0, prev - 1));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [livePrice, tradeRecalcCooldownCycles]);
   async function verifyAccess(email?: string) {
     const cleanEmail = (email || accessEmail).trim().toLowerCase();
     if (!cleanEmail) {
@@ -836,8 +1174,9 @@ useEffect(() => {
     }
 
     if (cleanEmail === WOLVRENE_ACCESS_CONFIG.ownerEmail) {
-      localStorage.setItem("wolvrene_access_granted", "true");
-      localStorage.setItem("wolvrene_access_email", cleanEmail);
+      storageSet("wolvrene_access_granted", true);
+      storageSet("wolvrene_access_email", cleanEmail);
+      setAccessEmail(cleanEmail);
       setAccessStatus("granted");
       return;
     }
@@ -855,8 +1194,9 @@ useEffect(() => {
       const data = await response.json().catch(() => ({}));
 
       if (response.ok && data?.active) {
-        localStorage.setItem("wolvrene_access_granted", "true");
-        localStorage.setItem("wolvrene_access_email", cleanEmail);
+        storageSet("wolvrene_access_granted", true);
+        storageSet("wolvrene_access_email", cleanEmail);
+        setAccessEmail(cleanEmail);
         setAccessStatus("granted");
         return;
       }
@@ -1017,21 +1357,40 @@ useEffect(() => {
     const rejectionShort = upperWick > body * 1.35 && last.close < last.open;
     const breakoutLong = Boolean(structureState.lastSwingHigh && last.close > structureState.lastSwingHigh && bodyRatio > 0.42);
     const breakoutShort = Boolean(structureState.lastSwingLow && last.close < structureState.lastSwingLow && bodyRatio > 0.42);
+    const bosUp = structureState.event === "BOS_UP" || structureState.event === "CHOCH_UP";
+    const bosDown = structureState.event === "BOS_DOWN" || structureState.event === "CHOCH_DOWN";
+    const bullishDisplacement = last.close > last.open && bodyRatio > 0.6;
+    const bearishDisplacement = last.close < last.open && bodyRatio > 0.6;
+    const avgRecentRange = sample.slice(0, -1).reduce((sum, c) => sum + Math.max(c.high - c.low, 0), 0) / Math.max(sample.length - 1, 1);
+    const volumeExpansion = range > avgRecentRange * 1.15;
     const fakeout = Boolean(liquidityState.sweptHigh || liquidityState.sweptLow);
 
-    const direction: SignalDirection = reclaimLong || rejectionLong || breakoutLong || liquidityState.sweptLow
+    const direction: SignalDirection = reclaimLong || rejectionLong || breakoutLong || liquidityState.sweptLow || bosUp
       ? "LONG"
-      : reclaimShort || rejectionShort || breakoutShort || liquidityState.sweptHigh
+      : reclaimShort || rejectionShort || breakoutShort || liquidityState.sweptHigh || bosDown
       ? "SHORT"
       : null;
 
-    const triggerCount = [reclaimLong || reclaimShort, rejectionLong || rejectionShort, breakoutLong || breakoutShort, fakeout].filter(Boolean).length;
-    const score = Math.min(30, triggerCount * 7 + (bodyRatio > 0.55 ? 5 : 0) + (direction && liquidityState.trapDirection === direction ? 6 : 0));
-    const quality: TriggerQuality = score >= 26 ? "SNIPER" : score >= 20 ? "STRONG" : score >= 13 ? "VALID" : score >= 7 ? "WEAK" : "NONE";
-    const summary = `${quality} trigger · ${direction || "WAIT"} · reclaim:${reclaimLong || reclaimShort ? "Y" : "N"} rejection:${rejectionLong || rejectionShort ? "Y" : "N"} breakout:${breakoutLong || breakoutShort ? "Y" : "N"} fakeout:${fakeout ? "Y" : "N"}`;
+    const longScore =
+      (liquidityState.sweptLow ? 16 : 0) +
+      (reclaimLong ? 16 : 0) +
+      (breakoutLong ? 14 : 0) +
+      (bullishDisplacement ? 12 : 0) +
+      (volumeExpansion ? 12 : 0) +
+      (bosUp ? 14 : 0);
+    const shortScore =
+      (liquidityState.sweptHigh ? 16 : 0) +
+      (rejectionShort ? 16 : 0) +
+      (breakoutShort ? 14 : 0) +
+      (bearishDisplacement ? 12 : 0) +
+      (volumeExpansion ? 12 : 0) +
+      (bosDown ? 14 : 0);
+    const score = Math.min(40, Math.max(longScore, shortScore) + (fakeout ? 3 : 0));
+    const quality: TriggerQuality = score >= 34 ? "SNIPER" : score >= 26 ? "STRONG" : score >= 18 ? "VALID" : score >= 10 ? "WEAK" : "NONE";
+    const summary = `${quality} trigger · ${direction || "WAIT"} · L:${longScore} S:${shortScore} · vol:${volumeExpansion ? "Y" : "N"} disp:${bullishDisplacement || bearishDisplacement ? "Y" : "N"} bos:${bosUp || bosDown ? "Y" : "N"}`;
 
     return { quality, direction, reclaim: reclaimLong || reclaimShort, rejection: rejectionLong || rejectionShort, breakout: breakoutLong || breakoutShort, fakeout, score, summary };
-  }, [recentCandles, structureState.lastSwingHigh, structureState.lastSwingLow, liquidityState.sweptHigh, liquidityState.sweptLow, liquidityState.trapDirection]);
+  }, [recentCandles, structureState.lastSwingHigh, structureState.lastSwingLow, structureState.event, liquidityState.sweptHigh, liquidityState.sweptLow, liquidityState.trapDirection]);
 
 
   const backtestStats = useMemo(() => {
@@ -1056,7 +1415,7 @@ useEffect(() => {
     }, {});
     const bestSession = Object.entries(bySession).sort((a, b) => (b[1].wins / Math.max(b[1].total, 1)) - (a[1].wins / Math.max(a[1].total, 1)))[0]?.[0] || "Waiting";
     const bestTimeframe = Object.entries(byTimeframe).sort((a, b) => (b[1].wins / Math.max(b[1].total, 1)) - (a[1].wins / Math.max(a[1].total, 1)))[0]?.[0] || "Waiting";
-    return { trades: closed.length, wins: wins.length, losses: losses.length, winRate: closed.length ? (wins.length / closed.length) * 100 : 0, profitFactor: grossLoss ? grossWin / grossLoss : grossWin > 0 ? 99 : 0, grossWin, grossLoss, bestSession, bestTimeframe };
+    return { trades: closed.length, wins: wins.length, losses: losses.length, winRate: closed.length ? (wins.length / closed.length) * 100 : 0, profitFactor: grossLoss ? grossWin / grossLoss : grossWin > 0 ? Number(grossWin.toFixed(2)) : 0, grossWin, grossLoss, bestSession, bestTimeframe };
   }, [structuredJournal]);
 
   const signalPlan = useMemo<SignalPlan>(() => {
@@ -1157,195 +1516,45 @@ const impulseBoost =
 
 
 
-  const institutionalPrecision = useMemo(() => {
-    const mark = livePrice || lastCandleRef.current?.close || signalPlan.entry || 0;
-    const sample = recentCandles.slice(-80);
-    const last = sample[sample.length - 1];
-    const avgRange = sample.length >= 20 ? sample.slice(-20).reduce((sum, c) => sum + Math.max(c.high - c.low, 0), 0) / 20 : mark * 0.002;
-    const impulseRange = last ? Math.max(last.high - last.low, mark * 0.0001) : mark * 0.002;
-    const body = last ? Math.abs(last.close - last.open) : 0;
-    const bodyRatio = impulseRange ? body / impulseRange : 0;
-
-    const structureDirection: SignalDirection =
-      structureState.event === "BOS_UP" || structureState.event === "CHOCH_UP" || structureState.event === "SWEEP_LOW"
-        ? "LONG"
-        : structureState.event === "BOS_DOWN" || structureState.event === "CHOCH_DOWN" || structureState.event === "SWEEP_HIGH"
-        ? "SHORT"
-        : structureState.bias === "BULLISH"
-        ? "LONG"
-        : structureState.bias === "BEARISH"
-        ? "SHORT"
-        : null;
-
-    const triggerDirection = triggerValidation.direction;
-    const liquidityDirection = liquidityState.trapDirection;
-    const signalDirection = signalPlan.direction;
-    const votes = [structureDirection, triggerDirection, liquidityDirection, signalDirection].filter(Boolean) as Exclude<SignalDirection, null>[];
-    const longVotes = votes.filter((v) => v === "LONG").length;
-    const shortVotes = votes.filter((v) => v === "SHORT").length;
-    const preferredDirection: SignalDirection = longVotes > shortVotes ? "LONG" : shortVotes > longVotes ? "SHORT" : triggerDirection || liquidityDirection || structureDirection || signalDirection;
-
-    const structureOpposesPreferred = Boolean(
-      preferredDirection === "LONG" && structureState.bias === "BEARISH" && structureState.event !== "CHOCH_UP" && structureState.event !== "SWEEP_LOW"
-    ) || Boolean(
-      preferredDirection === "SHORT" && structureState.bias === "BULLISH" && structureState.event !== "CHOCH_DOWN" && structureState.event !== "SWEEP_HIGH"
-    );
-
-    const triggerOpposesStructure = Boolean(
-      triggerDirection && structureDirection && triggerDirection !== structureDirection && triggerValidation.quality !== "SNIPER"
-    );
-
-    const liquidityOpposesTrigger = Boolean(
-      liquidityDirection && triggerDirection && liquidityDirection !== triggerDirection && triggerValidation.quality !== "SNIPER"
-    );
-
-    const hardConflict = Boolean(preferredDirection && (structureOpposesPreferred || triggerOpposesStructure || liquidityOpposesTrigger));
-    const sessionWeight = session.includes("New York") ? 10 : session.includes("London") ? 8 : session.includes("Asia") ? 4 : 1;
-    const volatilityWeight = candlesSummary.volatility === "NORMAL" ? 6 : candlesSummary.volatility === "LOW" ? 2 : -7;
-    const triggerWeight = triggerValidation.quality === "SNIPER" ? 22 : triggerValidation.quality === "STRONG" ? 17 : triggerValidation.quality === "VALID" ? 11 : triggerValidation.quality === "WEAK" ? 2 : -8;
-    const structureWeight = structureState.bias === "BULLISH" || structureState.bias === "BEARISH" ? 9 : structureState.bias === "RANGING" ? -4 : -8;
-    const liquidityWeight = liquidityDirection && preferredDirection === liquidityDirection ? 12 : liquidityState.sweptHigh || liquidityState.sweptLow ? 4 : 0;
-    const impulseWeight = bodyRatio > 0.62 ? 6 : bodyRatio > 0.42 ? 3 : -2;
-    const alignmentScore = longVotes === shortVotes ? 0 : Math.abs(longVotes - shortVotes) * 8;
-    const conflictPenalty = hardConflict ? -34 : triggerOpposesStructure || liquidityOpposesTrigger ? -18 : 0;
-    const precisionScore = Math.max(0, Math.min(100, 45 + sessionWeight + volatilityWeight + triggerWeight + structureWeight + liquidityWeight + impulseWeight + alignmentScore + conflictPenalty));
-
-    const institutionalGrade = hardConflict || precisionScore < 55
-      ? "REJECT"
-      : precisionScore >= 88 && triggerValidation.quality !== "NONE"
-      ? "A+"
-      : precisionScore >= 76
-      ? "A"
-      : precisionScore >= 64
-      ? "B"
-      : "C";
-
-    const executeAllowed = Boolean(preferredDirection && !hardConflict && precisionScore >= 76 && triggerValidation.quality !== "NONE");
-    const eliteAllowed = Boolean(executeAllowed && precisionScore >= 86 && (triggerValidation.quality === "STRONG" || triggerValidation.quality === "SNIPER"));
-    const reason = hardConflict
-      ? "Institutional filter blocked the signal because structure, liquidity, and trigger are not aligned."
-      : `Institutional ${institutionalGrade} · precision ${precisionScore}% · votes L:${longVotes}/S:${shortVotes} · session weight ${sessionWeight}`;
-
-    return {
-      preferredDirection,
-      structureDirection,
-      longVotes,
-      shortVotes,
-      hardConflict,
-      triggerOpposesStructure,
-      liquidityOpposesTrigger,
-      precisionScore,
-      institutionalGrade,
-      executeAllowed,
-      eliteAllowed,
-      reason,
-    };
-  }, [livePrice, signalPlan, recentCandles, structureState, liquidityState, triggerValidation, candlesSummary.volatility, session]);
-
-  const rawDecisionPlan = useMemo<DecisionPlan>(() => {
-    const mark = livePrice || lastCandleRef.current?.close || signalPlan.entry || 0;
-    const candle = lastCandleRef.current;
-    const time = typeof candle?.time === "number" ? candle.time : Math.floor(Date.now() / 1000);
-
-    const structureDirection: SignalDirection =
-      triggerValidation.direction || liquidityState.trapDirection ||
-      (structureState.event === "BOS_UP" || structureState.event === "CHOCH_UP" || structureState.event === "SWEEP_LOW"
-        ? "LONG"
-        : structureState.event === "BOS_DOWN" || structureState.event === "CHOCH_DOWN" || structureState.event === "SWEEP_HIGH"
-        ? "SHORT"
-        : structureState.bias === "BULLISH"
-        ? "LONG"
-        : structureState.bias === "BEARISH"
-        ? "SHORT"
-        : null);
-
-    const direction = institutionalPrecision.preferredDirection || triggerValidation.direction || signalPlan.direction || structureDirection;
-    const directionalAgreement = Boolean(direction && signalPlan.direction && structureDirection && signalPlan.direction === structureDirection && !institutionalPrecision.hardConflict);
-    const oppositeShift = Boolean(
-      direction === "LONG" && (structureState.event === "BOS_DOWN" || structureState.event === "CHOCH_DOWN" || structureState.event === "SWEEP_HIGH")
-    ) || Boolean(
-      direction === "SHORT" && (structureState.event === "BOS_UP" || structureState.event === "CHOCH_UP" || structureState.event === "SWEEP_LOW")
-    );
-
-    const triggerScore = structureState.event === "NONE" ? 0 : structureState.event.includes("CHOCH") ? 18 : structureState.event.includes("BOS") ? 16 : structureState.event.includes("SWEEP") ? 14 : 10;
-    const agreementBoost = directionalAgreement ? 12 : structureDirection && signalPlan.direction && structureDirection !== signalPlan.direction ? -18 : 0;
-    const liquidityBoost = liquidityState.trapDirection && direction === liquidityState.trapDirection ? liquidityState.score : Math.max(0, liquidityState.score - 10);
-    const triggerBoost = triggerValidation.direction && direction === triggerValidation.direction ? triggerValidation.score : Math.max(0, triggerValidation.score - 12);
-    const volatilityAdjust = candlesSummary.volatility === "HIGH" ? -8 : candlesSummary.volatility === "LOW" ? -3 : 4;
-    const institutionalBoost = Math.round((institutionalPrecision.precisionScore - 60) * 0.45);
-    const conflictPenalty = institutionalPrecision.hardConflict ? -42 : institutionalPrecision.triggerOpposesStructure || institutionalPrecision.liquidityOpposesTrigger ? -22 : 0;
-    const proSignal = Boolean(direction && institutionalPrecision.eliteAllowed && (directionalAgreement || liquidityState.trapDirection === direction || triggerValidation.quality === "SNIPER"));
-    const quality = Math.round(Math.max(0, Math.min(100, signalPlan.confidence + structureState.score + triggerScore + liquidityBoost + triggerBoost + agreementBoost + volatilityAdjust + institutionalBoost + conflictPenalty - 32)));
-
-    const phase: DecisionPhase = !decisionSettings.enabled
-      ? signalPlan.state === "NO TRADE" || signalPlan.state === "WAITING" ? "SCANNING" : "SPAWNED"
-      : !mark || !direction
-      ? "SCANNING"
-      : institutionalPrecision.hardConflict
-      ? "FILTERED"
-      : oppositeShift && decisionSettings.cancelOnOppositeShift
-      ? "FILTERED"
-      : quality >= Math.max(decisionSettings.executeConfidence, 86) && institutionalPrecision.executeAllowed && (!decisionSettings.requireTriggerForExecute || triggerValidation.quality === "VALID" || triggerValidation.quality === "STRONG" || triggerValidation.quality === "SNIPER") && (!decisionSettings.proSignalOnly || proSignal)
-      ? "EXECUTE"
-      : quality >= Math.max(decisionSettings.validateConfidence, 72) && !institutionalPrecision.hardConflict
-      ? "VALIDATED"
-      : quality >= Math.max(decisionSettings.spawnConfidence, 58) && institutionalPrecision.institutionalGrade !== "REJECT"
-      ? "SPAWNED"
-      : "NO_TRADE";
-
-    const riskDistance = Math.max(
-      signalPlan.entry && signalPlan.sl ? Math.abs(signalPlan.entry - signalPlan.sl) : 0,
-      mark * 0.0022
-    );
-    const entry = signalPlan.entry || mark;
-    const sl = signalPlan.sl || (direction === "LONG" ? entry - riskDistance : entry + riskDistance);
-    const tp1 = signalPlan.tp1 || (direction === "LONG" ? entry + riskDistance * 1.25 : entry - riskDistance * 1.25);
-    const tp2 = signalPlan.tp2 || (direction === "LONG" ? entry + riskDistance * 2.0 : entry - riskDistance * 2.0);
-    const tp3 = signalPlan.tp3 || (direction === "LONG" ? entry + riskDistance * 3.0 : entry - riskDistance * 3.0);
-    const invalidation = direction === "LONG" ? Math.min(sl, structureState.lastSwingLow || sl) : Math.max(sl, structureState.lastSwingHigh || sl);
-
-    const action = phase === "EXECUTE"
-      ? `ENTER NOW ${direction}: institutional ${institutionalPrecision.institutionalGrade} alignment confirmed. Use pro-signal risk control.`
-      : phase === "VALIDATED"
-      ? `WAIT RETEST ${direction}: setup validated, but precision filter wants cleaner continuation/retest.`
-      : phase === "SPAWNED"
-      ? `EARLY WATCH ${direction}: idea spawned, not mature enough for execution.`
-      : phase === "MANAGE"
-      ? `MANAGE RUNNER ${direction}. Keep invalidation protected.`
-      : phase === "FILTERED"
-      ? `FILTERED: ${institutionalPrecision.reason}`
-      : "Scan only. No institutional-grade decision yet.";
-
-    const reason = [institutionalPrecision.reason, structureState.summary, liquidityState.summary, triggerValidation.summary, signalPlan.reason, proSignal ? "Elite pro signal conditions detected." : "Waiting for stronger institutional alignment."].filter(Boolean).join(" ");
-    const id = `${timeframe}-${direction || "WAIT"}-${phase}-${time}`;
-
-    return {
-      id,
-      phase,
-      direction,
-      confidence: signalPlan.confidence,
-      quality,
-      risk: signalPlan.risk,
-      entry,
-      sl,
-      tp1,
-      tp2,
-      tp3,
-      trigger: structureState.event,
-      structure: structureState.bias,
-      liquidity: liquidityState.bias,
-      triggerQuality: triggerValidation.quality,
-      managementAction: "WAIT",
-      proSignal,
-      invalidation,
-      action,
-      reason,
-      createdAt: Date.now(),
-      expiresAt: decisionSettings.holdBars > 0 ? Date.now() + decisionSettings.holdBars * (TF_SECONDS[timeframe] || 300) * 1000 : null,
-      markerTime: signalPlan.markerTime || time,
-      shouldMark: !institutionalPrecision.hardConflict && (phase === "VALIDATED" || phase === "EXECUTE" || (phase === "SPAWNED" && quality >= 68)),
-    };
-  }, [livePrice, signalPlan, structureState, liquidityState, triggerValidation, candlesSummary.volatility, decisionSettings, timeframe, institutionalPrecision]);
+  const { institutionalPrecision, rawDecisionPlan } = useMemo(
+    () =>
+      buildRawDecisionPlan({
+        livePrice,
+        lastClose: lastCandleRef.current?.close || null,
+        lastCandleTime: typeof lastCandleRef.current?.time === "number" ? lastCandleRef.current.time : null,
+        selectedSymbol,
+        timeframe,
+        tradeModeSelection,
+        signalPlan,
+        structureState,
+        liquidityState,
+        triggerValidation,
+        candlesVolatility: candlesSummary.volatility,
+        session,
+        recentCandles,
+        decisionSettings,
+        activeExecutionTrade,
+        allowMultiTimeframeTrades: signalSubscriptionSettings.allowMultiTimeframeTrades,
+        tradeRecalcCooldownCycles,
+      }),
+    [
+      livePrice,
+      selectedSymbol,
+      timeframe,
+      tradeModeSelection,
+      signalPlan,
+      structureState,
+      liquidityState,
+      triggerValidation,
+      candlesSummary.volatility,
+      session,
+      recentCandles,
+      decisionSettings,
+      activeExecutionTrade,
+      signalSubscriptionSettings.allowMultiTimeframeTrades,
+      tradeRecalcCooldownCycles,
+    ]
+  );
 
   useEffect(() => {
     setActiveDecision((prev) => {
@@ -1384,6 +1593,371 @@ const impulseBoost =
   }, [rawDecisionPlan.id, rawDecisionPlan.phase, rawDecisionPlan.quality, livePrice]);
 
   const decisionPlan = activeDecision || rawDecisionPlan;
+  const autoTradeMode = useMemo<TradeMode>(() => {
+    if (SCALP_TIMEFRAMES.includes(timeframe as (typeof SCALP_TIMEFRAMES)[number]) && !SWING_TIMEFRAMES.includes(timeframe as (typeof SWING_TIMEFRAMES)[number])) return "SCALP";
+    if (SWING_TIMEFRAMES.includes(timeframe as (typeof SWING_TIMEFRAMES)[number]) && !SCALP_TIMEFRAMES.includes(timeframe as (typeof SCALP_TIMEFRAMES)[number])) return "SWING";
+    return timeframe === "15m" ? "SCALP" : "SWING";
+  }, [timeframe]);
+  const activeTradeMode: TradeMode = tradeModeSelection === "AUTO" ? autoTradeMode : tradeModeSelection;
+  const signalLifecycleState = useMemo(() => {
+    if (decisionPlan.phase === "SPAWNED") return "SPAWN";
+    if (decisionPlan.phase === "VALIDATED") return "VALIDATE";
+    if (decisionPlan.phase === "EXECUTE") return "EXECUTE";
+    if (decisionPlan.phase === "MANAGE") return "MANAGE";
+    if (decisionPlan.phase === "EXIT") return "EXIT";
+    return "WAIT";
+  }, [decisionPlan.phase]);
+  const signalRejectionReasons = useMemo(() => {
+    const reasons: string[] = [];
+    if (structureState.bias === "RANGING" || structureState.bias === "WAITING") reasons.push("No structure confirmation");
+    if (triggerValidation.quality === "NONE") reasons.push("No trigger");
+    if (decisionPlan.quality < decisionSettings.spawnConfidence) reasons.push("Low confidence");
+    if (candlesSummary.trend === "MIXED") reasons.push("Choppy market");
+    if (!(session.includes("London") || session.includes("New York"))) reasons.push("Bad session");
+    if (candlesSummary.volatility === "LOW" || candlesSummary.volatility === "HIGH") reasons.push(`Volatility ${candlesSummary.volatility.toLowerCase()}`);
+    if (liquidityState.bias === "WAITING") reasons.push("Liquidity not confirmed");
+    const rr = decisionPlan.entry && decisionPlan.sl && decisionPlan.tp1 ? Math.abs(decisionPlan.tp1 - decisionPlan.entry) / Math.max(Math.abs(decisionPlan.entry - decisionPlan.sl), 0.0000001) : 0;
+    if (rr > 0 && rr < 1.2) reasons.push("Risk/reward invalid");
+    return reasons;
+  }, [structureState.bias, triggerValidation.quality, decisionPlan.quality, decisionSettings.spawnConfidence, candlesSummary.trend, candlesSummary.volatility, session, liquidityState.bias, decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1]);
+  const triggerChecklist = useMemo(() => {
+    const rr = decisionPlan.entry && decisionPlan.sl && decisionPlan.tp1
+      ? Math.abs(decisionPlan.tp1 - decisionPlan.entry) / Math.max(Math.abs(decisionPlan.entry - decisionPlan.sl), 0.000001)
+      : 0;
+    return {
+      structure: structureState.bias === "BULLISH" || structureState.bias === "BEARISH",
+      liquidity: liquidityState.bias !== "WAITING",
+      volume: candlesSummary.volatility !== "LOW",
+      trigger: triggerValidation.quality === "VALID" || triggerValidation.quality === "STRONG" || triggerValidation.quality === "SNIPER",
+      rr: rr >= 1.2,
+      session: session.includes("London") || session.includes("New York"),
+    };
+  }, [decisionPlan.entry, decisionPlan.sl, decisionPlan.tp1, structureState.bias, liquidityState.bias, candlesSummary.volatility, triggerValidation.quality, session]);
+  const entryGrade = useMemo(() => {
+    const score = [
+      triggerChecklist.structure,
+      triggerChecklist.liquidity,
+      triggerChecklist.volume,
+      triggerChecklist.trigger,
+      triggerChecklist.rr,
+      triggerChecklist.session,
+      Boolean(institutionalPrecision.precisionScore >= 70),
+      Boolean(decisionPlan.direction && (structureState.bias === "BULLISH" ? decisionPlan.direction === "LONG" : structureState.bias === "BEARISH" ? decisionPlan.direction === "SHORT" : true)),
+    ].filter(Boolean).length;
+    if (score >= 8 && decisionPlan.quality >= 90) return "A+";
+    if (score >= 7 && decisionPlan.quality >= 84) return "A";
+    if (score >= 6 && decisionPlan.quality >= 74) return "B";
+    if (score >= 4 && decisionPlan.quality >= 62) return "C";
+    return "Reject";
+  }, [triggerChecklist, institutionalPrecision.precisionScore, decisionPlan.quality, decisionPlan.direction, structureState.bias]);
+  const activeExecutionTradeView = useMemo(
+    () =>
+      activeExecutionTrade &&
+      ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status)
+        ? activeExecutionTrade
+        : null,
+    [activeExecutionTrade]
+  );
+  const brain = runUnifiedBrain({
+    symbol: selectedSymbol,
+    selectedMode: activeTradeMode,
+    selectedTimeframe: timeframe,
+    session,
+    livePrice,
+    activeTrade: activeExecutionTradeView
+      ? {
+          status: activeExecutionTradeView.status,
+          side: activeExecutionTradeView.side,
+          symbol: activeExecutionTradeView.symbol,
+          timeframe: activeExecutionTradeView.timeframe,
+          entry: activeExecutionTradeView.entry,
+          sl: activeExecutionTradeView.sl,
+          tp1: activeExecutionTradeView.tp1,
+          tp2: activeExecutionTradeView.tp2,
+          tp3: activeExecutionTradeView.tp3,
+          openedAt: activeExecutionTradeView.openedAt,
+        }
+      : null,
+    tradeMarkers,
+    draftUsd,
+    candlesSummary,
+    structureScore: structureState.score,
+    liquidityScore: liquidityState.score,
+    triggerScore: triggerValidation.score,
+    learningWins: learningWeights.wins,
+    learningLosses: learningWeights.losses,
+    signalPlan,
+    decisionPlan,
+  });
+  const portfolioState = brain.portfolio;
+  const riskFirewall = brain.riskFirewall;
+  const finalDecisionEngine = brain.finalDecision;
+  const adaptiveSizing = brain.adaptiveSizing;
+  const brainDecision = brain.decision;
+  const brainConfidence = brain.confidence;
+  const strategyPerformance = useMemo(() => buildStrategyPerformance(tradeLog), [tradeLog]);
+  const adaptiveWeightsLive = useMemo(() => deriveAdaptiveWeights({ performance: strategyPerformance, brain }), [strategyPerformance, brain]);
+  const executionEvaluation = useMemo(
+    () =>
+      evaluateExecutionReadiness({
+        brain,
+        activeTrade: activeExecutionTrade ? { side: activeExecutionTrade.side, status: activeExecutionTrade.status } : null,
+        allowScaleIn: false,
+      }),
+    [brain, activeExecutionTrade]
+  );
+  const uiMismatch =
+    decisionPlan.direction !== brain.direction ||
+    decisionPlan.phase !== brain.decision.phase ||
+    signalPlan.confidence !== brain.confidence;
+  const signalFeedRows = useMemo(() => {
+    const hasActiveExecution = Boolean(
+      activeExecutionTrade &&
+        activeExecutionTrade.symbol === selectedSymbol &&
+        ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(activeExecutionTrade.status)
+    );
+    const rows = decisionHistory
+      .filter((item) => item.direction)
+      .map((item) => ({
+        id: item.id,
+        time: new Date(item.createdAt).toLocaleTimeString(),
+        symbol: item.symbol,
+        timeframe: item.timeframe,
+        mode: item.mode,
+        side: item.direction as "LONG" | "SHORT",
+        status: hasActiveExecution && item.phase === "EXECUTE" ? "MANAGE" : item.phase,
+        confidence: item.quality,
+        reason: item.reason.slice(0, 90),
+        candleTime: Number(item.markerTime || 0),
+        executable: !hasActiveExecution && (item.phase === "EXECUTE" || item.phase === "VALIDATED"),
+      }))
+      .filter((row) => signalSubscriptionSettings.timeframes[row.timeframe] !== false)
+      .filter((row) => signalSubscriptionSettings.modes[row.mode] !== false)
+      .filter((row) => row.confidence >= signalSubscriptionSettings.minConfidence)
+      .sort((a, b) => (a.id < b.id ? 1 : -1));
+    const dedup = rows.filter(
+      (row, idx, arr) =>
+        arr.findIndex(
+          (x) =>
+            x.symbol === row.symbol &&
+            x.timeframe === row.timeframe &&
+            x.side === row.side &&
+            x.status === row.status &&
+            x.candleTime === row.candleTime
+        ) === idx
+    );
+    return dedup.slice(0, signalSubscriptionSettings.maxFeedRows);
+  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade]);
+
+  useEffect(() => {
+    if (!executionEvaluation.canExecute) return;
+    if (!brain.direction || !decisionPlan.entry || !decisionPlan.sl || !decisionPlan.tp1 || !decisionPlan.tp2 || !decisionPlan.tp3) return;
+    const side = brain.direction;
+    const entry = decisionPlan.entry;
+    const sl = decisionPlan.sl;
+    const tp1 = decisionPlan.tp1;
+    const tp2 = decisionPlan.tp2;
+    const tp3 = decisionPlan.tp3;
+    const markerEventTime = Number(decisionPlan.markerTime || Math.floor(Date.now() / 1000));
+    const tradeEventKey = `${selectedSymbol}-${timeframe}-${activeTradeMode}-${side}-${decisionPlan.phase}-${markerEventTime}`;
+    const timer = window.setTimeout(() => {
+      setActiveExecutionTrade((prev) => {
+        if (prev?.id === tradeEventKey) return prev;
+        if (
+          prev &&
+          prev.symbol === selectedSymbol &&
+          (prev.status === "OPEN" ||
+            prev.status === "TP1_HIT" ||
+            prev.status === "TP2_HIT" ||
+            prev.status === "RUNNER" ||
+            prev.status === "BREAKEVEN" ||
+            prev.status === "CLOSING")
+        ) {
+          return prev;
+        }
+        const leverage = Math.max(1, Number(draftLeverage) || 5);
+        const margin = adaptiveSizing.margin;
+        const perUnitRisk = Math.max(Math.abs(entry - sl), 0.00001);
+        const notional = margin * leverage;
+        const riskLimitedSize = adaptiveSizing.maxRiskUsd / perUnitRisk;
+        const size = Math.min(notional / Math.max(entry, 0.00001), riskLimitedSize);
+        return {
+          id: tradeEventKey,
+          symbol: selectedSymbol,
+          timeframe,
+          mode: activeTradeMode,
+          side,
+          entry,
+          sl,
+          tp1,
+          tp2,
+          tp3,
+          size,
+          leverage,
+          margin,
+          confidence: decisionPlan.quality,
+          reason: decisionPlan.reason,
+          openedAt: Date.now(),
+          status: "OPEN",
+          invalidation: decisionPlan.invalidation || sl,
+          tp1Hit: false,
+          tp2Hit: false,
+          tp3Hit: false,
+          partial1Done: false,
+          partial2Done: false,
+          maxDrawdown: 0,
+          bestExcursion: 0,
+        };
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    executionEvaluation.canExecute,
+    decisionPlan.phase,
+    decisionPlan.direction,
+    decisionPlan.entry,
+    decisionPlan.sl,
+    decisionPlan.tp1,
+    decisionPlan.tp2,
+    decisionPlan.tp3,
+    decisionPlan.quality,
+    decisionPlan.reason,
+    decisionPlan.invalidation,
+    decisionPlan.markerTime,
+    selectedSymbol,
+    timeframe,
+    activeTradeMode,
+    draftLeverage,
+    adaptiveSizing.margin,
+    adaptiveSizing.maxRiskUsd,
+    brain.direction,
+  ]);
+
+  useEffect(() => {
+    if (!activeExecutionTrade || !livePrice) return;
+    const timer = window.setTimeout(() => {
+      setActiveExecutionTrade((prev) => {
+        if (!prev) return prev;
+        if (prev.status === "CLOSED_SL" || prev.status === "CLOSED_TP" || prev.status === "INVALIDATED" || prev.status === "CLOSED_MANUAL") return prev;
+        const isLong = prev.side === "LONG";
+        const pnl = isLong ? livePrice - prev.entry : prev.entry - livePrice;
+        const nextDrawdown = Math.min(prev.maxDrawdown, pnl);
+        const nextExcursion = Math.max(prev.bestExcursion, pnl);
+        const hitSL = isLong ? livePrice <= prev.sl : livePrice >= prev.sl;
+        const hitInvalidation = isLong ? livePrice <= prev.invalidation : livePrice >= prev.invalidation;
+        const hitTP1 = isLong ? livePrice >= prev.tp1 : livePrice <= prev.tp1;
+        const hitTP2 = isLong ? livePrice >= prev.tp2 : livePrice <= prev.tp2;
+        const hitTP3 = isLong ? livePrice >= prev.tp3 : livePrice <= prev.tp3;
+        if (hitSL) return { ...prev, status: "CLOSED_SL", maxDrawdown: nextDrawdown, bestExcursion: nextExcursion };
+        if (hitInvalidation) return { ...prev, status: "INVALIDATED", maxDrawdown: nextDrawdown, bestExcursion: nextExcursion };
+        if (hitTP3) return { ...prev, status: "CLOSED_TP", tp1Hit: true, tp2Hit: true, tp3Hit: true, partial1Done: true, partial2Done: true, maxDrawdown: nextDrawdown, bestExcursion: nextExcursion };
+        if (hitTP2) return { ...prev, status: "RUNNER", tp1Hit: true, tp2Hit: true, partial1Done: true, partial2Done: true, sl: prev.entry, maxDrawdown: nextDrawdown, bestExcursion: nextExcursion };
+        if (hitTP1) return { ...prev, status: "BREAKEVEN", tp1Hit: true, partial1Done: true, sl: prev.entry, maxDrawdown: nextDrawdown, bestExcursion: nextExcursion };
+        return { ...prev, status: prev.tp2Hit ? "RUNNER" : prev.status, maxDrawdown: nextDrawdown, bestExcursion: nextExcursion };
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeExecutionTrade, livePrice]);
+
+  useEffect(() => {
+    if (!activeExecutionTrade) return;
+    const openStatuses: ExecutionTradeStatus[] = ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"];
+    if (!openStatuses.includes(activeExecutionTrade.status)) return;
+    if (activeExecutionTrade.symbol !== selectedSymbol || activeExecutionTrade.timeframe !== timeframe) return;
+    const timer = window.setTimeout(() => {
+      setTradeMarkers((prev) => {
+        if (prev.some((item) => item.id === activeExecutionTrade.id)) return prev;
+        return [
+          {
+            id: activeExecutionTrade.id,
+            symbol: activeExecutionTrade.symbol,
+            timeframe: activeExecutionTrade.timeframe,
+            mode: activeExecutionTrade.mode,
+            side: activeExecutionTrade.side,
+            entry: activeExecutionTrade.entry,
+            sl: activeExecutionTrade.sl,
+            tp1: activeExecutionTrade.tp1,
+            tp2: activeExecutionTrade.tp2,
+            tp3: activeExecutionTrade.tp3,
+            confidence: activeExecutionTrade.confidence,
+            entryGrade,
+            reason: activeExecutionTrade.reason,
+            openedAt: toChartEpochSec(activeExecutionTrade.openedAt),
+          },
+          ...prev,
+        ].slice(0, 50);
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeExecutionTrade?.id, activeExecutionTrade?.status, selectedSymbol, timeframe, entryGrade]);
+
+  useEffect(() => {
+    if (!activeExecutionTrade) return;
+    if (lastExecutionStatusRef.current === activeExecutionTrade.status) return;
+    lastExecutionStatusRef.current = activeExecutionTrade.status;
+    if (activeExecutionTrade.status !== "CLOSED_SL" && activeExecutionTrade.status !== "CLOSED_TP" && activeExecutionTrade.status !== "INVALIDATED" && activeExecutionTrade.status !== "CLOSED_MANUAL") return;
+    const openedAtMs = normalizeEpochMs(activeExecutionTrade.openedAt);
+    const closePrice = activeExecutionTrade.status === "CLOSED_SL" || activeExecutionTrade.status === "INVALIDATED" || activeExecutionTrade.status === "CLOSED_MANUAL" ? activeExecutionTrade.sl : activeExecutionTrade.tp3;
+    const pnlPerUnit = activeExecutionTrade.side === "LONG" ? closePrice - activeExecutionTrade.entry : activeExecutionTrade.entry - closePrice;
+    const pnl = pnlPerUnit * activeExecutionTrade.size;
+    const durationMin = Math.max(0, Math.floor((Date.now() - openedAtMs) / 60000));
+    addStructuredJournal({
+      event: pnl >= 0 ? "TP_HIT" : "SL_HIT",
+      side: activeExecutionTrade.side,
+      entry: activeExecutionTrade.entry,
+      exit: closePrice,
+      pnl,
+      roi: activeExecutionTrade.margin ? (pnl / activeExecutionTrade.margin) * 100 : 0,
+      note: `${activeExecutionTrade.status} · Duration ${durationMin}m · MDD ${activeExecutionTrade.maxDrawdown.toFixed(2)} · MFE ${activeExecutionTrade.bestExcursion.toFixed(2)}`,
+    });
+    const timer = window.setTimeout(() => {
+      const result: TradeChartMarker["result"] =
+        activeExecutionTrade.status === "CLOSED_TP" ? "WIN" :
+        activeExecutionTrade.status === "INVALIDATED" ? "INVALIDATED" :
+        Math.abs(pnl) < Math.max(activeExecutionTrade.margin * 0.001, 0.01) ? "BE" :
+        pnl > 0 ? "WIN" : "LOSS";
+      const rr = Math.abs(activeExecutionTrade.tp1 - activeExecutionTrade.entry) / Math.max(Math.abs(activeExecutionTrade.entry - activeExecutionTrade.sl), 0.00001);
+      const logged: LoggedTrade = {
+        id: activeExecutionTrade.id,
+        strategyName: brain.strategyProfile.name,
+        mode: activeExecutionTrade.mode,
+        timeframe: activeExecutionTrade.timeframe,
+        session,
+        side: activeExecutionTrade.side,
+        entry: activeExecutionTrade.entry,
+        sl: activeExecutionTrade.sl,
+        tp1: activeExecutionTrade.tp1,
+        tp2: activeExecutionTrade.tp2,
+        tp3: activeExecutionTrade.tp3,
+        tpHits: activeExecutionTrade.tp3Hit ? 3 : activeExecutionTrade.tp2Hit ? 2 : activeExecutionTrade.tp1Hit ? 1 : 0,
+        rr: Number(rr.toFixed(2)),
+        result: result === "INVALIDATED" ? "INVALIDATED" : result,
+        entryGrade: brain.entryGrade,
+        durationMin,
+        managementActions: [brain.managementPlaybook.action],
+        openedAt: openedAtMs,
+        closedAt: Date.now(),
+      };
+      setTradeLog(appendTradeLog(logged));
+      setTradeMarkers((prev) =>
+        prev.map((marker) =>
+          marker.id === activeExecutionTrade.id
+            ? {
+                ...marker,
+                closedAt: Date.now(),
+                result,
+                pnl,
+                closeReason: activeExecutionTrade.status,
+              }
+            : marker
+        )
+      );
+      setLastClosedExecutionTrade(activeExecutionTrade);
+      setActiveExecutionTrade(null);
+      setTradeRecalcCooldownCycles(1);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeExecutionTrade, brain.entryGrade, brain.managementPlaybook.action, brain.strategyProfile.name, session]);
 
   const managementBrain = useMemo<ManagementBrainState>(() => {
     const selected = selectedOrder;
@@ -1485,8 +2059,8 @@ const impulseBoost =
   }, [eliteAIScore, decisionPlan.direction, decisionPlan.phase, mtfConfluence.conflict, mtfConfluence.score, sessionSniper.allowSignal, triggerValidation.quality]);
 
   const eliteBacktest = useMemo(() => {
-    return runEliteBacktest(recentCandles.slice(-backtestRange), signalMarkers);
-  }, [recentCandles, signalMarkers, backtestRange]);
+    return runEliteBacktest(recentCandles.slice(-backtestRange), signalMarkers, selectedSymbol, activeTradeMode, timeframe);
+  }, [recentCandles, signalMarkers, backtestRange, selectedSymbol, activeTradeMode, timeframe]);
 
   const realAccuracyStats = useMemo(() => buildAccuracyStats(eliteJournal), [eliteJournal]);
 
@@ -1658,8 +2232,8 @@ const impulseBoost =
 
     return {
       markers: markers
-        .filter((marker) => marker.kind === "DECISION" || marker.kind === "BOS" || marker.kind === "CHOCH" || marker.kind === "SWEEP" || marker.kind === "TRIGGER")
-        .filter((marker) => marker.kind !== "DECISION" || marker.strength >= 50)
+        .filter((marker) => marker.kind === "DECISION" || marker.kind === "BOS" || marker.kind === "CHOCH" || marker.kind === "SWEEP")
+        .filter((marker) => marker.kind !== "DECISION" || marker.strength >= PRECISION_RULES.minWatchQuality)
         .slice(-PRECISION_RULES.maxVisibleDecisionMarkers),
       zones: zones
         .filter((zone) => Math.abs(last.close - zone.price) <= avgRange * 4.5)
@@ -1911,12 +2485,11 @@ const impulseBoost =
 
   const confidence = signalPlan.confidence;
   const executionPrice = Number(draftPrice) || livePrice || lastCandleRef.current?.close || 0;
-  // draftUsd now means MARGIN / COST in USDT, like exchange panels. Example: 100 USDT at 50x = 5,000 USDT notional.
-  const executionMargin = Math.max(0, Number(draftUsd) || 0);
+  const executionUsd = Math.max(0, Number(draftUsd) || 0);
   const executionLeverage = clampLeverage(draftLeverage);
-  const estimatedMargin = executionMargin;
-  const estimatedNotional = calcNotionalFromMargin(executionMargin, executionLeverage);
-  const executionSize = calcBaseSizeFromUsd(estimatedNotional, executionPrice);
+  const executionSize = calcBaseSizeFromUsd(executionUsd, executionPrice);
+  const estimatedNotional = executionUsd;
+  const estimatedMargin = executionLeverage ? executionUsd / executionLeverage : 0;
 
   useEffect(() => {
     timeframeRef.current = timeframe;
@@ -1932,15 +2505,19 @@ const impulseBoost =
   }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI]);
 
   useEffect(() => {
-    if (!executionPrice || !executionMargin) return;
-    setDraftSize(executionSize ? executionSize.toFixed(6) : "0");
-  }, [executionPrice, executionMargin, executionSize]);
+    if (!executionPrice || !executionUsd) return;
+    const timer = window.setTimeout(() => {
+      setDraftSize(executionSize ? executionSize.toFixed(6) : "0");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [executionPrice, executionUsd, executionSize]);
 
   useEffect(() => {
-    selectedSymbolRef.current = selectedSymbol;
-    setLivePrice(null);
-    setSignalMarkers([]);
-    setRecentCandles([]);
+    const timer = window.setTimeout(() => {
+      setLivePrice(null);
+      setSignalMarkers([]);
+      setRecentCandles([]);
+    }, 0);
     lastCandleRef.current = null;
     candleSeriesRef.current?.setData([]);
     smartSignalRef.current = null;
@@ -1948,6 +2525,7 @@ const impulseBoost =
     lastDiscordSignalKeyRef.current = "";
     reloadCandles();
     getMarketStats();
+    return () => window.clearTimeout(timer);
   }, [selectedSymbol]);
 
   useEffect(() => {
@@ -1996,38 +2574,29 @@ useEffect(() => {
   saveJson("wolvreneDecisionHistoryV1", decisionHistory);
 }, [decisionHistory, hydrated]);
 
-  useEffect(() => {
-    const savedPrefs = storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs);
-    setSelectedSymbol(savedPrefs.selectedSymbol || defaultUserPrefs.selectedSymbol);
-    setTimeframe(savedPrefs.timeframe || defaultUserPrefs.timeframe);
-    setMarginMode(savedPrefs.marginMode || defaultUserPrefs.marginMode);
-    setOrderType(savedPrefs.orderType || defaultUserPrefs.orderType);
-    setOrderSide(savedPrefs.orderSide || defaultUserPrefs.orderSide);
-    setDraftPrice(savedPrefs.draftPrice || "");
-    setDraftUsd(savedPrefs.draftUsd || defaultUserPrefs.draftUsd);
-    setDraftLeverage(savedPrefs.draftLeverage || defaultUserPrefs.draftLeverage);
-    setTerminalTab(savedPrefs.terminalTab || defaultUserPrefs.terminalTab);
-    setHideUI(Boolean(savedPrefs.hideUI));
-    setSettings(loadJson("wolvreneChartSettings", defaultSettings));
-    setOrders(loadJson("wolvreneOrdersV15", [] as TradeOrder[]));
-    setAlerts(loadJson("wolvreneAlertsV15", [] as PriceAlert[]));
-    setJournalEntries(loadJson("wolvreneJournal", [] as JournalEntry[]));
-    setStructuredJournal(loadJson("wolvreneStructuredJournalV1", [] as StructuredJournalEntry[]));
-    setLearningWeights(loadJson("wolvreneLearningWeightsV1", defaultLearningWeights));
-    setTradeManagerSettings({ ...defaultTradeManagerSettings, ...loadJson("wolvreneTradeManagerSettingsV1", defaultTradeManagerSettings) });
-    setExternalAlertSettings({ ...defaultExternalAlertSettings, ...loadJson("wolvreneExternalAlertSettingsV1", defaultExternalAlertSettings) });
-    setDecisionSettings({ ...defaultDecisionSettings, ...loadJson("wolvreneDecisionSettingsV1", defaultDecisionSettings) });
-    setDecisionHistory(loadJson("wolvreneDecisionHistoryV1", [] as DecisionPlan[]));
-    setHydrated(true);
-  }, []);
+useEffect(() => {
+  if (!hydrated) return;
+  saveJson("wolvreneSignalSubscriptionSettingsV1", signalSubscriptionSettings);
+}, [signalSubscriptionSettings, hydrated]);
+
+useEffect(() => {
+  storageSet(activeExecutionTradeKey(), activeExecutionTrade);
+}, [activeExecutionTrade]);
 
   useEffect(() => {
-    if (livePrice && (!draftPrice || orderType === "market")) setDraftPrice(livePrice.toFixed(2));
+    if (!livePrice || (draftPrice && orderType !== "market")) return;
+    const timer = window.setTimeout(() => {
+      setDraftPrice(livePrice.toFixed(2));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [livePrice, draftPrice, orderType]);
 
   function beep() {
     try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
       const ctx = new AudioContextClass();
       const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -2164,7 +2733,7 @@ useEffect(() => {
       const candles = await fetchBitgetCandlesForSymbol(timeframeRef.current, selectedSymbolRef.current);
       if (!chartAliveRef.current || !candleSeriesRef.current || candles.length === 0) return;
 
-      candleSeriesRef.current.setData(candles);
+      candleSeriesRef.current.setData(candles.map(toChartCandle));
       setRecentCandles(candles.slice(-PRECISION_RULES.candleHistory));
       lastCandleRef.current = candles[candles.length - 1];
 
@@ -2197,14 +2766,28 @@ useEffect(() => {
     reloadCandles();
   }
 
+  function applyTradeModeSelection(mode: TradeModeSelection) {
+    setTradeModeSelection(mode);
+    const nextMode: TradeMode = mode === "AUTO" ? autoTradeMode : mode;
+    const nextAllowed = nextMode === "SCALP" ? SCALP_TIMEFRAMES : SWING_TIMEFRAMES;
+    if (!(nextAllowed as readonly string[]).includes(timeframe)) {
+      setTimeframe(nextAllowed[0]);
+    }
+  }
+
   async function getMarketStats() {
     try {
       const row = await fetchBitgetTickerForSymbol(selectedSymbolRef.current);
+      const changeRaw = row?.priceChangePercent ?? row?.changeUtc24h ?? row?.changeUtc;
+      const open24h = Number(row?.open24h || row?.open || 0);
+      const lastPr = Number(row?.lastPr || row?.last || 0);
+      const fallbackChange = open24h > 0 && lastPr > 0 ? ((lastPr - open24h) / open24h) * 100 : null;
+      const finalChange = Number.isFinite(Number(changeRaw)) ? Number(changeRaw) : fallbackChange;
       setMarketStats({
         high: row?.high24h ? Number(row.high24h).toLocaleString() : "--",
         low: row?.low24h ? Number(row.low24h).toLocaleString() : "--",
         volume: row?.baseVolume ? Number(row.baseVolume).toLocaleString() : "--",
-        change: row?.priceChangePercent ? `${Number(row.priceChangePercent).toFixed(2)}%` : "--",
+        change: finalChange === null || Number.isNaN(finalChange) ? "--" : `${Number(finalChange).toFixed(2)}%`,
         funding: row?.fundingRate ? `${(Number(row.fundingRate) * 100).toFixed(4)}%` : "--",
       });
     } catch {}
@@ -2253,7 +2836,7 @@ useEffect(() => {
   function timeToLeft(time: number) {
     const chart = chartApiRef.current;
     if (!chart) return null;
-    const coordinate = chart.timeScale().timeToCoordinate(time as any);
+    const coordinate = chart.timeScale().timeToCoordinate(time as Time);
     return typeof coordinate === "number" ? coordinate : null;
   }
 
@@ -2273,10 +2856,10 @@ useEffect(() => {
     const price = basePrice || (orderType === "limit" ? Number(draftPrice) : livePrice) || livePrice || lastCandleRef.current?.close;
     if (!price) return;
 
-    const leverage = clampLeverage(draftLeverage);
-    const marginUsd = Math.max(1, Number(draftUsd) || 0);
-    const notionalUsd = calcNotionalFromMargin(marginUsd, leverage);
+    const notionalUsd = Math.max(1, Number(draftUsd) || 0);
     const size = Math.max(0.000001, calcBaseSizeFromUsd(notionalUsd, price));
+    const leverage = clampLeverage(draftLeverage);
+    const marginUsd = leverage ? notionalUsd / leverage : notionalUsd;
 
     const order = {
       ...createOrderFromPrice(side, price),
@@ -2287,7 +2870,7 @@ useEffect(() => {
       marginMode,
     } as TradeOrder;
 
-    setOrders((prev) => [order, ...prev]);
+    setOrders((prev) => [normalizeOrderFinancials(order, price), ...prev]);
     setSelectedOrderId(order.id);
     addJournal(`${side} ${orderType.toUpperCase()} order created at ${formatPrice(price)} — ${notionalUsd.toFixed(2)} USDT / ${Number(size).toFixed(6)} base / ${leverage}x / ${marginMode.toUpperCase()}`);
     addStructuredJournal({ event: "ORDER_CREATED", side, entry: price, note: `${side} ${orderType.toUpperCase()} order created` });
@@ -2307,21 +2890,21 @@ useEffect(() => {
   }
 
   function updateOrder(orderId: number, patch: Partial<TradeOrder>) {
-    setOrders((prev) => prev.map((order) => (order.id === orderId ? { ...order, ...patch } : order)));
+    setOrders((prev) =>
+      prev.map((order) =>
+        order.id === orderId ? normalizeOrderFinancials({ ...order, ...patch } as TradeOrder) : order
+      )
+    );
   }
 
   function orderPnL(order: TradeOrder) {
     const mark = livePrice || order.entry;
-    const size = Number(order.size) || 0;
-    const diff = order.side === "LONG" ? mark - order.entry : order.entry - mark;
-    return diff * size;
+    return calcOrderPnLUsd(order, mark);
   }
 
   function orderRoi(order: TradeOrder) {
-    const size = Number(order.size) || 0;
-    const leverage = Math.max(1, Number(order.leverage) || 1);
-    const margin = Number((order as any).marginUsd) || (order.entry && size ? (order.entry * size) / leverage : 0);
-    return margin ? (orderPnL(order) / margin) * 100 : 0;
+    const mark = livePrice || order.entry;
+    return calcOrderRoiPct(order, mark);
   }
 
   function estimatedLiquidation(order: TradeOrder) {
@@ -2332,9 +2915,7 @@ useEffect(() => {
 
 
   function positionMargin(order: TradeOrder) {
-    const size = Number(order.size) || 0;
-    const leverage = Math.max(1, Number(order.leverage) || 1);
-    return Number((order as any).marginUsd) || (order.entry && size ? (order.entry * size) / leverage : 0);
+    return calcOrderMarginUsd(order);
   }
 
   function breakevenPrice(order: TradeOrder) {
@@ -2368,9 +2949,11 @@ useEffect(() => {
           if (selectedOrderId === orderId) setSelectedOrderId(null);
           return [];
         }
-        const nextNotional = calcUsdFromBaseSize(nextSize, livePrice || order.entry);
-        const nextMargin = nextNotional / Math.max(1, Number(order.leverage) || 1);
-        return [{ ...order, size: Number(nextSize.toFixed(6)), notionalUsd: nextNotional, marginUsd: nextMargin } as any];
+        const nextOrder = normalizeOrderFinancials(
+          { ...order, size: Number(nextSize.toFixed(6)) } as TradeOrder,
+          livePrice || order.entry
+        );
+        return [nextOrder];
       })
     );
   }
@@ -2383,7 +2966,7 @@ useEffect(() => {
       size: Number(order.size) || 0.01,
       leverage: Number(order.leverage) || 1,
     } as TradeOrder;
-    setOrders((prev) => [reversedOrder, ...prev.filter((item) => item.id !== order.id)]);
+    setOrders((prev) => [normalizeOrderFinancials(reversedOrder, price), ...prev.filter((item) => item.id !== order.id)]);
     setSelectedOrderId(reversedOrder.id);
     addJournal(`Reversed #${String(order.id).slice(-4)} into ${oppositeSide}`);
   }
@@ -2393,7 +2976,9 @@ useEffect(() => {
 
     setOrders((prev) =>
       prev.map((order) => {
-        if (target.type === "entry" && order.id === target.orderId) return { ...order, entry: price };
+        if (target.type === "entry" && order.id === target.orderId) {
+          return normalizeOrderFinancials({ ...order, entry: price } as TradeOrder);
+        }
         if (target.type === "sl" && order.id === target.orderId) return { ...order, sl: price };
 
         if (target.type === "tp" && order.id === target.orderId) {
@@ -2518,7 +3103,7 @@ useEffect(() => {
       prev.map((order) => {
         if (order.status === "CLOSED") return order;
         let changed = false;
-        let nextOrder: TradeOrder = { ...order, tps: [...order.tps] };
+        const nextOrder: TradeOrder = { ...order, tps: [...order.tps] };
         const isLong = order.side === "LONG";
         const initialRisk = Math.max(Math.abs(order.entry - order.sl), order.entry * 0.001);
         let currentSize = Number(order.size) || 0;
@@ -2601,196 +3186,346 @@ useEffect(() => {
     return order.tps.find((tp) => tp.id === lineEditor.tpId) || null;
   }
 
-  const aiContext = useMemo(() => {
-    const mark = livePrice || lastCandleRef.current?.close || 0;
-    const activeOrders = orders.filter((order) => order.status !== "CLOSED");
-    const selected = selectedOrder;
+  const marketRegime = brain.marketRegime;
+  const mlState = brain.mlState;
 
-    return {
-      symbol: selectedSymbol,
-      timeframe,
-      mark,
-      session,
-      sessionCountdown,
-      bias,
-      wolfMode,
-      confidence,
-      signalPlan,
-      decisionPlan,
-      structureState,
-      liquidityState,
-      triggerValidation,
-      visualIntelligence,
-      institutionalPrecision,
-      v23EliteEngine,
-      v25FinalBrain,
-      managementBrain,
-      marketStats,
-      candlesSummary,
-      backtestStats,
-      learningWeights,
-      activeOrders,
-      alerts,
-      selected,
-    };
-  }, [livePrice, timeframe, session, sessionCountdown, bias, wolfMode, confidence, signalPlan, decisionPlan, structureState, liquidityState, triggerValidation, visualIntelligence, institutionalPrecision, v23EliteEngine, v25FinalBrain, managementBrain, marketStats, candlesSummary, backtestStats, learningWeights, orders, alerts, selectedOrder]);
+  const UnifiedWolvreneBrain = useMemo(() => ({
+    symbol: selectedSymbol,
+    selectedMode: activeTradeMode,
+    selectedTimeframe: timeframe,
+    candles: recentCandles,
+    livePrice,
+    session,
+    activeTrade: activeExecutionTradeView,
+    userRiskSettings: {
+      maxRiskPct: riskFirewall.maxRiskPct,
+      riskState: riskFirewall.state,
+      firewallReason: riskFirewall.reason,
+    },
+    signal: brain.signalPlan,
+    decision: brain.decision,
+    debug: {
+      ...brain.debug,
+      executionState: executionEvaluation.state,
+      tradeLogged: tradeLog.length > 0,
+      performanceUpdated: strategyPerformance.length > 0,
+      adaptiveWeights: adaptiveWeightsLive,
+      discordSent: discordSentState,
+      uiMismatch,
+      uiMismatchDetails: uiMismatch
+        ? {
+            uiDirection: decisionPlan.direction,
+            uiPhase: decisionPlan.phase,
+            uiConfidence: signalPlan.confidence,
+            brainDirection: brain.direction,
+            brainPhase: brain.decision.phase,
+            brainConfidence: brain.confidence,
+          }
+        : null,
+    },
+    whyDecision: brain.whyDecision,
+    whyNoTrade: brain.whyNoTrade,
+    invalidationReason: brain.invalidationReason,
+    riskReason: brain.riskReason,
+    entryReason: brain.entryReason,
+    managementReason: brain.managementReason,
+    institutionalContext: brain.institutionalContext,
+    symbolStrength: brain.symbolStrength,
+    relativeMomentum: brain.relativeMomentum,
+    watchlistRank: brain.watchlistRank,
+    managementAction: brain.managementAction,
+    marketRegime,
+    mlState,
+    portfolio: portfolioState,
+    finalDecision: finalDecisionEngine,
+    adaptiveSizing,
+    performance: { eliteAIScore, backtestStats, realAccuracyStats },
+    learningState: { learningStats, learningWeights },
+  }), [selectedSymbol, activeTradeMode, timeframe, recentCandles, livePrice, session, activeExecutionTradeView, riskFirewall.maxRiskPct, riskFirewall.state, riskFirewall.reason, brain.signalPlan, brain.decision, brain.debug, marketRegime, mlState, portfolioState, finalDecisionEngine, adaptiveSizing, eliteAIScore, backtestStats, realAccuracyStats, learningStats, learningWeights, executionEvaluation.state, tradeLog.length, strategyPerformance.length, adaptiveWeightsLive, discordSentState, uiMismatch, decisionPlan.direction, decisionPlan.phase, signalPlan.confidence, brain.direction, brain.confidence]);
+
+  const unifiedTradingContext = useMemo(() => ({
+    symbol: UnifiedWolvreneBrain.symbol,
+    mode: UnifiedWolvreneBrain.selectedMode,
+    timeframe: UnifiedWolvreneBrain.selectedTimeframe,
+    session,
+    livePrice: UnifiedWolvreneBrain.livePrice,
+    signal: UnifiedWolvreneBrain.signal,
+    decision: UnifiedWolvreneBrain.decision,
+    debug: UnifiedWolvreneBrain.debug,
+    whyDecision: UnifiedWolvreneBrain.whyDecision,
+    whyNoTrade: UnifiedWolvreneBrain.whyNoTrade,
+    invalidationReason: UnifiedWolvreneBrain.invalidationReason,
+    riskReason: UnifiedWolvreneBrain.riskReason,
+    entryReason: UnifiedWolvreneBrain.entryReason,
+    managementReason: UnifiedWolvreneBrain.managementReason,
+    institutionalContext: UnifiedWolvreneBrain.institutionalContext,
+    symbolStrength: UnifiedWolvreneBrain.symbolStrength,
+    relativeMomentum: UnifiedWolvreneBrain.relativeMomentum,
+    watchlistRank: UnifiedWolvreneBrain.watchlistRank,
+    managementAction: UnifiedWolvreneBrain.managementAction,
+    activeTrade: UnifiedWolvreneBrain.activeTrade,
+    performance: UnifiedWolvreneBrain.performance,
+    portfolio: UnifiedWolvreneBrain.portfolio,
+    riskFirewall,
+    finalDecision: UnifiedWolvreneBrain.finalDecision,
+    adaptiveSizing: UnifiedWolvreneBrain.adaptiveSizing,
+    learningState: UnifiedWolvreneBrain.learningState,
+    mlState: UnifiedWolvreneBrain.mlState,
+    marketRegime: UnifiedWolvreneBrain.marketRegime,
+  }), [UnifiedWolvreneBrain, session, riskFirewall]);
+
+  const sanitizedBrainPayload = useMemo(() => {
+    const payload = buildSanitizedBrainPayload(brain);
+    console.log("Unified Brain Output:", brain);
+    console.log("Sanitized AI Payload:", payload);
+    return payload;
+  }, [brain]);
 
   const aiInsights = useMemo(() => {
     const notes: string[] = [];
-    const mark = aiContext.mark;
-    const selected = aiContext.selected;
-
-    if (!mark) notes.push("Waiting for live Bitget tick before producing execution-grade insight.");
-    if (bias === "BULLISH") notes.push("Bias is bullish. Prefer long ideas only after clean confirmation or a controlled pullback.");
-    if (bias === "BEARISH") notes.push("Bias is bearish. Avoid chasing longs unless structure flips with strength.");
-    if (bias === "NEUTRAL") notes.push("Bias is neutral. Best action is patience until structure becomes cleaner.");
-    if (confidence < 50) notes.push("Confidence is below 50%. This is a watch-only environment, not an execution zone.");
-    if (confidence >= 60) notes.push("Confidence is improving. Wait for trigger confirmation before entering.");
-    notes.push(`Visual reasoning: ${visualIntelligence.summary}. Decision action: ${visualIntelligence.lastDecisionAction}.`);
-    notes.push(`Institutional precision: ${institutionalPrecision.institutionalGrade} / ${institutionalPrecision.precisionScore}%. ${institutionalPrecision.reason}`);
-    notes.push(`Elite Engine: ${v23EliteEngine.summary}. Win streak: ${v23EliteEngine.winStreak}. Sniper allowed: ${v23EliteEngine.sniperAllowed ? "YES" : "NO"}.`);
-    notes.push(`Master Brain: ${v25FinalBrain.summary}. Reason: ${v25FinalBrain.reason}`);
-    if (triggerValidation.fakeout) notes.push("Fakeout/trap behavior detected. Treat the next signal as reaction-based, not chase-based.");
-    if (structureState.event === "CHOCH_UP" || structureState.event === "CHOCH_DOWN") notes.push("CHoCH detected. Previous directional idea loses priority until the new side confirms.");
-    if (selected && mark) {
-      const pnl = orderPnL(selected);
-      const roi = orderRoi(selected);
-      notes.push(`Selected ${selected.side} #${String(selected.id).slice(-4)} is ${pnl >= 0 ? "green" : "red"}: ${pnl.toFixed(2)} USDT / ${roi.toFixed(2)}% ROI.`);
-      if (selected.tps.some((tp) => tp.hit)) notes.push("One or more TP levels are marked hit. Consider reducing exposure or protecting breakeven.");
-    }
-    if (alerts.some((alert) => alert.hit)) notes.push("There are hit alerts on the chart. Clean them or review why they triggered.");
-    if (orders.length === 0) notes.push("No open simulated positions. AI can focus on market read and setup planning.");
-
+    notes.push(`Brain phase: ${sanitizedBrainPayload.phase} · Direction: ${sanitizedBrainPayload.direction || "WAIT"} · Confidence: ${sanitizedBrainPayload.confidence}%.`);
+    notes.push(`Strategy: ${sanitizedBrainPayload.strategyProfile.name} · Grade: ${sanitizedBrainPayload.entryGrade}.`);
+    notes.push(`Decision: ${sanitizedBrainPayload.whyDecision || "No execution decision."}`);
+    notes.push(`No-trade reason: ${sanitizedBrainPayload.whyNoTrade || "N/A"}`);
+    notes.push(`Risk: ${sanitizedBrainPayload.riskReason}`);
+    notes.push(`Next action: ${sanitizedBrainPayload.strategyProfile.nextAction}`);
     return notes.slice(0, 6);
-  }, [aiContext, bias, confidence, selectedOrder, alerts, orders, livePrice]);
+  }, [sanitizedBrainPayload]);
 
-  function buildAIContextPayload() {
-    const mark = livePrice || lastCandleRef.current?.close || 0;
-    const selected = selectedOrder || null;
-
-    return {
-      symbol: selectedSymbol,
-      product: "Bitget USDT-FUTURES",
-      timeframe,
-      livePrice: mark,
-      session,
-      sessionCountdown,
-      bias,
-      wolfMode,
-      confidence,
-      signalPlan,
-      decisionPlan,
-      structureState,
-      liquidityState,
-      triggerValidation,
-      managementBrain,
-      marketStats,
-      candlesSummary,
-      backtestStats,
-      learningWeights,
-      tradeManagerSettings,
-      draftOrder: {
-        side: orderSide,
-        marginMode,
-        orderType,
-        price: Number(draftPrice) || mark,
-        size: Number(draftSize) || 0,
-        leverage: Number(draftLeverage) || 1,
-        estimatedNotional,
-        estimatedMargin,
+  const aiContext = useMemo(
+    () => ({
+      source: "UnifiedWolvreneBrain",
+      payload: sanitizedBrainPayload,
+      mode: aiExplanationMode,
+      debug: {
+        aiPayloadSanitized: true,
+        aiContextSource: "UnifiedWolvreneBrain",
+        aiRateProtected: true,
       },
-      selectedOrder: selected
-        ? {
-            id: selected.id,
-            side: selected.side,
-            entry: selected.entry,
-            sl: selected.sl,
-            size: Number(selected.size) || 0,
-            leverage: Number(selected.leverage) || 1,
-            pnl: orderPnL(selected),
-            roi: orderRoi(selected),
-            margin: positionMargin(selected),
-            estimatedLiquidation: estimatedLiquidation(selected),
-            tps: selected.tps.map((tp) => ({
-              id: tp.id,
-              label: tp.label,
-              price: tp.price,
-              closePct: tp.closePct,
-              hit: tp.hit,
-            })),
-          }
-        : null,
-      orders: orders
-        .filter((order) => order.status !== "CLOSED")
-        .map((order) => ({
-          id: order.id,
-          side: order.side,
-          entry: order.entry,
-          sl: order.sl,
-          size: Number(order.size) || 0,
-          leverage: Number(order.leverage) || 1,
-          pnl: orderPnL(order),
-          roi: orderRoi(order),
-          tps: order.tps.map((tp) => ({
-            label: tp.label,
-            price: tp.price,
-            closePct: tp.closePct,
-            hit: tp.hit,
-          })),
-        })),
-      alerts: alerts.map((alert) => ({
-        id: alert.id,
-        price: alert.price,
-        side: alert.side,
-        enabled: alert.enabled,
-        hit: alert.hit,
-      })),
-      localInsights: aiInsights,
-      timestamp: new Date().toISOString(),
+    }),
+    [sanitizedBrainPayload, aiExplanationMode]
+  );
+
+  const selectedTradeContext = useMemo<SelectedTradeContext>(() => {
+    const selectedTrade = activeExecutionTradeView || selectedOrder;
+    if (!selectedTrade) {
+      return {
+        side: null,
+        entry: null,
+        markPrice: livePrice ?? null,
+        pnlUsd: null,
+        pnlPct: null,
+        sl: null,
+        tp1: null,
+        tp2: null,
+        tp3: null,
+        tpCount: 0,
+        distanceToSL: null,
+        distanceToTP1: null,
+        timeInTrade: null,
+        status: "NO_ACTIVE_TRADE",
+        currentAction: brain.managementPlaybook.action,
+        riskState: sanitizedBrainPayload.risk,
+      };
+    }
+
+    const entry = Number.isFinite(selectedTrade.entry) ? selectedTrade.entry : null;
+    const markPrice = livePrice ?? null;
+    const sl = Number.isFinite(selectedTrade.sl) ? selectedTrade.sl : null;
+    const tp1 = "tp1" in selectedTrade ? (Number.isFinite(selectedTrade.tp1) ? selectedTrade.tp1 : null) : selectedTrade.tps?.[0]?.price ?? null;
+    const tp2 = "tp2" in selectedTrade ? (Number.isFinite(selectedTrade.tp2) ? selectedTrade.tp2 : null) : selectedTrade.tps?.[1]?.price ?? null;
+    const tp3 = "tp3" in selectedTrade ? (Number.isFinite(selectedTrade.tp3) ? selectedTrade.tp3 : null) : selectedTrade.tps?.[2]?.price ?? null;
+    const side = selectedTrade.side || null;
+    const size = Number((selectedTrade as { size?: number }).size || 0);
+    const pnlUsd = livePrice && entry && side
+      ? (side === "LONG" ? livePrice - entry : entry - livePrice) * size
+      : null;
+    const margin = "margin" in selectedTrade ? selectedTrade.margin : selectedTrade.marginUsd;
+    const pnlPct = pnlUsd !== null && Number.isFinite(Number(margin)) && Number(margin) > 0 ? (pnlUsd / Number(margin)) * 100 : null;
+    const tpCount = "tp1Hit" in selectedTrade
+      ? (selectedTrade.tp3Hit ? 3 : selectedTrade.tp2Hit ? 2 : selectedTrade.tp1Hit ? 1 : 0)
+      : selectedTrade.tps?.filter((tp) => tp.hit).length || 0;
+    const distanceToSL = livePrice && sl ? Math.abs(livePrice - sl) : null;
+    const distanceToTP1 = livePrice && tp1 ? Math.abs(tp1 - livePrice) : null;
+    const timeInTrade = "openedAt" in selectedTrade ? Math.max(0, Math.floor((Date.now() - normalizeEpochMs(selectedTrade.openedAt)) / 60000)) : null;
+    return {
+      side,
+      entry,
+      markPrice,
+      pnlUsd,
+      pnlPct,
+      sl,
+      tp1,
+      tp2,
+      tp3,
+      tpCount,
+      distanceToSL,
+      distanceToTP1,
+      timeInTrade,
+      status: selectedTrade.status || "UNKNOWN",
+      currentAction: brain.managementPlaybook.action,
+      riskState: sanitizedBrainPayload.risk,
     };
+  }, [activeExecutionTradeView, selectedOrder, livePrice, brain.managementPlaybook.action, sanitizedBrainPayload.risk]);
+
+  const aiLiveContext = useMemo<LiveContext>(() => ({
+    symbol: selectedSymbol,
+    mode: activeTradeMode,
+    timeframe,
+    livePrice: livePrice ?? null,
+    session,
+    direction: sanitizedBrainPayload.direction,
+    confidence: sanitizedBrainPayload.confidence,
+    volatility: candlesSummary.volatility,
+    funding: marketStats.funding,
+    ordersCount: orders.length,
+    alertsCount: alerts.length,
+    candleTrend: candlesSummary.trend,
+  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, candlesSummary.trend, marketStats.funding, orders.length, alerts.length]);
+
+  const activeTradeContext = useMemo<SelectedTradeContext>(() => {
+    if (activeExecutionTradeView) {
+      const entry = Number.isFinite(activeExecutionTradeView.entry) ? activeExecutionTradeView.entry : null;
+      const markPrice = livePrice ?? null;
+      const pnlUsd = livePrice && entry
+        ? (activeExecutionTradeView.side === "LONG" ? livePrice - entry : entry - livePrice) * activeExecutionTradeView.size
+        : null;
+      const pnlPct = pnlUsd !== null && activeExecutionTradeView.margin > 0 ? (pnlUsd / activeExecutionTradeView.margin) * 100 : null;
+      return {
+        side: activeExecutionTradeView.side,
+        entry,
+        markPrice,
+        pnlUsd,
+        pnlPct,
+        sl: activeExecutionTradeView.sl,
+        tp1: activeExecutionTradeView.tp1,
+        tp2: activeExecutionTradeView.tp2,
+        tp3: activeExecutionTradeView.tp3,
+        tpCount: activeExecutionTradeView.tp3Hit ? 3 : activeExecutionTradeView.tp2Hit ? 2 : activeExecutionTradeView.tp1Hit ? 1 : 0,
+        distanceToSL: livePrice ? Math.abs(livePrice - activeExecutionTradeView.sl) : null,
+        distanceToTP1: livePrice ? Math.abs(activeExecutionTradeView.tp1 - livePrice) : null,
+        timeInTrade: Math.max(0, Math.floor((Date.now() - normalizeEpochMs(activeExecutionTradeView.openedAt)) / 60000)),
+        status: activeExecutionTradeView.status,
+        currentAction: brain.managementPlaybook.action,
+        riskState: sanitizedBrainPayload.risk,
+      };
+    }
+    return selectedTradeContext;
+  }, [activeExecutionTradeView, livePrice, brain.managementPlaybook.action, sanitizedBrainPayload.risk, selectedTradeContext]);
+
+  const signalContext = useMemo(
+    () => ({
+      phase: sanitizedBrainPayload.phase,
+      direction: sanitizedBrainPayload.direction,
+      confidence: sanitizedBrainPayload.confidence,
+      qualityScore: sanitizedBrainPayload.qualityScore,
+      qualityGrade: sanitizedBrainPayload.qualityGrade,
+      entryGrade: sanitizedBrainPayload.entryGrade,
+      confirmationCount: sanitizedBrainPayload.confirmationCount,
+      blockedReason: sanitizedBrainPayload.debug.blockedReason || sanitizedBrainPayload.debug.strategyBlockedReason,
+      invalidationReason: sanitizedBrainPayload.invalidationReason,
+      nextConfirmation: sanitizedBrainPayload.nextConfirmation,
+    }),
+    [sanitizedBrainPayload]
+  );
+
+  const riskContext = useMemo(
+    () => ({
+      risk: sanitizedBrainPayload.risk,
+      riskReason: sanitizedBrainPayload.riskReason,
+      riskEngine: sanitizedBrainPayload.riskEngine,
+    }),
+    [sanitizedBrainPayload]
+  );
+
+  const managementPlaybook = useMemo(
+    () => ({
+      action: sanitizedBrainPayload.managementPlaybook.action,
+      reason: sanitizedBrainPayload.managementPlaybook.reason,
+      protectBE: sanitizedBrainPayload.managementPlaybook.protectBE,
+      trailSL: sanitizedBrainPayload.managementPlaybook.trailSL,
+      scaleOut: sanitizedBrainPayload.managementPlaybook.scaleOut,
+      earlyExit: sanitizedBrainPayload.managementPlaybook.earlyExit,
+      exitReason: sanitizedBrainPayload.managementPlaybook.exitReason,
+      nextCheckpoint: sanitizedBrainPayload.managementPlaybook.nextCheckpoint,
+    }),
+    [sanitizedBrainPayload]
+  );
+
+  function inferUserTradingIntent(question: string): AIIntent {
+    const text = question.toLowerCase();
+    if (/(manage|runner|trail|scale|protect|exit|position|my trade|hold|close|trade|profit|loss|تريد|صفقة)/i.test(text)) return "MANAGE_TRADE";
+    if (/(risk|danger|safe|invalidation|sl|stop loss|drawdown|rr|مخاطرة)/i.test(text)) return "RISK_CHECK";
+    if (/(entry|entries|where to enter|best area|trigger)/i.test(text)) return "BEST_ENTRY";
+    if (/(session|london|new york|asia|open|timing|جلسة)/i.test(text)) return "SESSION_OUTLOOK";
+    if (/(analyze|analysis|market|structure|liquidity|scenario|السوق)/i.test(text)) return "MARKET_ANALYSIS";
+    return "CUSTOM";
   }
 
-  function buildAIResponse(question: string) {
-    const q = question.toLowerCase();
-    const mark = aiContext.mark;
-    const selected = aiContext.selected;
-    const activeOrders = aiContext.activeOrders.length;
-    const activeAlerts = aiContext.alerts.filter((alert) => alert.enabled && !alert.hit).length;
-
-    const header = `WOLVRENE LIVE BRAIN\n${selectedSymbol} ${timeframe} · ${session} · Signal ${signalPlan.state} · Risk ${signalPlan.risk} · Confidence ${signalPlan.confidence}% · Orders ${activeOrders} · Alerts ${activeAlerts} · Candles ${candlesSummary.trend}/${candlesSummary.volatility}`;
-
-    if (!mark) {
-      return `${header}\n\nLive price is not confirmed yet. Wait until Bitget tick is live before trusting entries, TP/SL, or risk numbers.`;
-    }
-
-    if (q.includes("entry") || q.includes("دخول") || q.includes("long") || q.includes("short") || q.includes("signal")) {
-      const canShowTradePlan = Boolean(v25FinalBrain.activeTrade || v25FinalBrain.action === "ENTER NOW");
-      if (!canShowTradePlan) {
-        return `${header}\n\nNo real EXECUTE signal and no open position. I will not print Entry / SL / TP from watch-only analysis. Current state: ${v25FinalBrain.consoleState}. Reason: ${v25FinalBrain.reason}`;
+  function formatAIResponseMessage(structured: WolvreneStructuredResponse) {
+    const marketRead = `${sanitizedBrainPayload.phase} ${sanitizedBrainPayload.direction || "WAIT"} | ${aiLiveContext.symbol} ${aiLiveContext.timeframe} ${aiLiveContext.mode}`;
+    const hasSelectedTrade = Boolean(selectedTradeContext.side && selectedTradeContext.entry !== null);
+    const tradeStatus = hasSelectedTrade
+      ? `${selectedTradeContext.side} | Entry ${selectedTradeContext.entry} | Mark ${selectedTradeContext.markPrice ?? "N/A"} | PnL ${selectedTradeContext.pnlUsd ?? "N/A"} (${selectedTradeContext.pnlPct ?? "N/A"}%) | SL ${selectedTradeContext.sl ?? "N/A"} | TP1 ${selectedTradeContext.tp1 ?? "N/A"}`
+      : "No selected trade context.";
+    const riskLine = `${sanitizedBrainPayload.risk} | ${sanitizedBrainPayload.riskReason} | Trap ${sanitizedBrainPayload.institutionalContext.trapRisk}%`;
+    const watchLine = structured.reasoning.filter(Boolean).slice(0, 2).join(" | ") || sanitizedBrainPayload.nextConfirmation;
+    let safeSummary = structured.summary;
+    if (safeSummary.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(safeSummary) as Partial<WolvreneStructuredResponse>;
+        safeSummary = typeof parsed.summary === "string" ? parsed.summary : safeSummary;
+      } catch {
+        safeSummary = safeSummary.replace(/^\{+/, "").trim();
       }
-      return `${header}\n\nSignal: ${v25FinalBrain.consoleState}.\nEntry: ${v25FinalBrain.entry ? formatPrice(v25FinalBrain.entry) : "--"}\nSL: ${v25FinalBrain.sl ? formatPrice(v25FinalBrain.sl) : "--"}\nTP1: ${v25FinalBrain.tp1 ? formatPrice(v25FinalBrain.tp1) : "--"}\nTP2: ${v25FinalBrain.tp2 ? formatPrice(v25FinalBrain.tp2) : "--"}\nTP3: ${v25FinalBrain.tp3 ? formatPrice(v25FinalBrain.tp3) : "--"}\n\nReason: ${v25FinalBrain.reason}\nWarning: ${signalPlan.warning || "Manage risk. Do not chase."}`;
     }
-
-    if (q.includes("manage") || q.includes("trade") || q.includes("صفقة") || q.includes("ادير")) {
-      if (!selected) return `${header}\n\nNo selected position. Open or select an order first, then I can evaluate PnL, SL distance, TP progress, and risk control.`;
-      return `${header}\n\nSelected ${selected.side} #${String(selected.id).slice(-4)}\nEntry: ${formatPrice(selected.entry)}\nMark: ${formatPrice(mark)}\nPnL: ${orderPnL(selected).toFixed(2)} USDT\nROI: ${orderRoi(selected).toFixed(2)}%\nSL: ${formatPrice(selected.sl)}\nTPs: ${selected.tps.length} active\n\nManagement: if TP1 is near or hit, protect the trade. If structure weakens before TP1, reduce exposure instead of hoping.`;
-    }
-
-    if (q.includes("risk") || q.includes("خطر") || q.includes("safe") || q.includes("امان")) {
-      const riskLabel = confidence >= 65 ? "CONTROLLED" : confidence >= 50 ? "ELEVATED" : "HIGH / WAIT";
-      return `${header}\n\nRisk level: ${riskLabel}.\nActive orders: ${activeOrders}. Active alerts: ${activeAlerts}.\nRule: if confidence is below 50%, no forced entry. If volatility expands suddenly, reduce size or wait.`;
-    }
-
-    if (q.includes("session") || q.includes("جلسة")) {
-      return `${header}\n\nSession read: ${session}. Next phase: ${sessionCountdown}.\nUse the session as timing filter: Asia often builds liquidity, London expands, New York executes or reverses. Do not treat every candle the same across sessions.`;
-    }
-
-    return `${header}\n\nAI read: ${aiInsights[0] || "Waiting for cleaner context."}\n\nCurrent mark: ${formatPrice(mark)}.\nActive orders: ${activeOrders}. Alerts: ${activeAlerts}.\nNext action: wait for a clean trigger, then manage risk through Entry / SL / TP lines.`;
+    return [
+      `Summary: ${safeSummary}`,
+      "",
+      `Market Read: ${marketRead}`,
+      "",
+      `Intent Analysis:`,
+      ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
+      "",
+      `Scenarios:`,
+      ...(structured.scenarios && structured.scenarios.length
+        ? structured.scenarios.map((line, idx) => `${idx + 1}. ${line}`)
+        : [
+            "1. Primary Scenario: Waiting for confirmation-driven continuation.",
+            "2. Alternative Scenario: Rotation persists if trigger quality stays weak.",
+            "3. Trap Scenario: Fake breakout risk remains high."
+          ]),
+      "",
+      `Action: ${structured.decision}`,
+      `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
+      `Next Confirmation: ${structured.nextAction}`,
+      `Confidence Note: ${structured.confidenceNote}`,
+    ].join("\n");
   }
 
-  async function sendAIMessage(text?: string) {
+  async function sendAIMessage(text?: string, quickIntent?: AIIntent) {
     const question = (text || aiInput).trim();
-    if (!question || aiThinking) return;
+    const intent = quickIntent || inferIntent(question);
+    if (!question || aiThinking || aiInFlightRef.current) return;
+    if (!hasValidAIPayload(sanitizedBrainPayload)) {
+      const missingPayloadMessage: AIMessage = {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: "AI payload missing. Brain context not available.",
+        time: new Date().toLocaleTimeString(),
+      };
+      setAiMessages((prev) => [
+        ...prev,
+        missingPayloadMessage,
+      ].slice(-40));
+      return;
+    }
+    const requestKey = getAICacheKey({ question, payload: sanitizedBrainPayload, intent });
+    if (lastAIRequestKeyRef.current === requestKey) return;
+    lastAIRequestKeyRef.current = requestKey;
+    aiInFlightRef.current = true;
+    aiRequestSeqRef.current += 1;
+    const requestId = aiRequestSeqRef.current;
 
     const now = new Date().toLocaleTimeString();
     const userMessage: AIMessage = { id: Date.now(), role: "user", text: question, time: now };
@@ -2802,70 +3537,69 @@ useEffect(() => {
     setAiThinking(true);
 
     try {
-      const payload = {
+      const history = aiMessages.map((m) => ({ role: m.role, text: m.text }));
+      const aiResult = await askWolvreneAICore({
         question,
-        context: buildAIContextPayload(),
-        messages: aiMessages.slice(-10),
-      };
-
-      const res = await fetch("/api/ai", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        payload: sanitizedBrainPayload,
+        intent,
+        selectedTradeContext,
+        activeTradeContext,
+        liveContext: aiLiveContext,
+        mode: aiExplanationMode,
+        requestId,
+        history,
       });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data?.error || `AI route failed with ${res.status}`);
-      }
-
-      const answer =
-        typeof data?.answer === "string" && data.answer.trim()
-          ? data.answer.trim()
-          : buildAIResponse(question);
-
-      setAiBridgeStatus(data?.mode === "missing_key" ? "missing_key" : "connected");
-      setAiMessages((prev) =>
-        [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: answer,
-            time: new Date().toLocaleTimeString(),
-          },
-        ].slice(-40)
-      );
-    } catch (error) {
+      if (aiResult.requestId !== aiRequestSeqRef.current) return;
+      const structured = guardWolvreneAIResponse(aiResult.structured, {
+        payload: sanitizedBrainPayload,
+        intent,
+        selectedTradeContext,
+        liveContext: aiLiveContext,
+        userQuestion: question,
+      });
+      const answer = formatAIResponseMessage(structured);
+      setLastValidAIResponse(structured);
+      setAiBridgeStatus("connected");
+      setAiMessages((prev) => {
+        const nextMessage: AIMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: answer,
+          structured,
+          time: new Date().toLocaleTimeString(),
+        };
+        return [...prev, nextMessage].slice(-40);
+      });
+    } catch {
+      if (requestId !== aiRequestSeqRef.current) return;
       setAiBridgeStatus("error");
-      const fallback = `${buildAIResponse(question)}\n\n[Bridge note] Real AI route is not responding yet. Check app/api/ai/route.ts and OPENAI_API_KEY in .env.local.`;
-      setAiMessages((prev) =>
-        [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: fallback,
-            time: new Date().toLocaleTimeString(),
-          },
-        ].slice(-40)
-      );
+      const fallbackStructured = lastValidAIResponse || buildAIFailureFallback(sanitizedBrainPayload);
+      const fallback = formatAIResponseMessage(fallbackStructured);
+      setAiMessages((prev) => {
+        const fallbackMessage: AIMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: fallback,
+          structured: fallbackStructured,
+          time: new Date().toLocaleTimeString(),
+        };
+        return [...prev, fallbackMessage].slice(-40);
+      });
     } finally {
+      aiInFlightRef.current = false;
       setAiThinking(false);
     }
   }
 
   function runAIQuickAction(action: "analyze" | "entry" | "risk" | "manage" | "session") {
-    const prompts = {
-      analyze: "Analyze BTC now using the current dashboard context. Keep the response clean, practical, and not too long.",
-      entry: "Give me a clean execution plan with trigger, entry, SL, TP, and invalidation. Keep it short.",
-      risk: "Is this market safe or dangerous right now?",
-      manage: "Manage my selected trade and tell me what to do next.",
-      session: "Give me the current session outlook.",
+    const actionConfig: Record<"analyze" | "entry" | "risk" | "manage" | "session", { intent: AIIntent; prompt: string }> = {
+      analyze: { intent: "MARKET_ANALYSIS", prompt: "Analyze BTC now using current dashboard context." },
+      entry: { intent: "BEST_ENTRY", prompt: "What is the best entry right now?" },
+      risk: { intent: "RISK_CHECK", prompt: "Run a risk check on this environment and selected trade." },
+      manage: { intent: "MANAGE_TRADE", prompt: "Manage my selected trade with trade-specific guidance." },
+      session: { intent: "SESSION_OUTLOOK", prompt: "Give session outlook for current mode/timeframe." },
     };
-
-    sendAIMessage(prompts[action]);
+    sendAIMessage(actionConfig[action].prompt, actionConfig[action].intent);
   }
 
   useEffect(() => {
@@ -2896,19 +3630,18 @@ useEffect(() => {
     const markerPrice = plan.entry || signalPlan.markerPrice;
     const direction = plan.direction || signalPlan.direction;
     const quality = plan.quality || signalPlan.confidence;
-    // Visible lifecycle: SCAN/SPAWNED = early marker, VALIDATED = watch marker, EXECUTE = confirmed marker.
-    // This keeps the system alive on chart while still hiding Entry/SL/TP values until EXECUTE or an open trade.
-    const signalLifecyclePhase =
-      plan.phase === "EXECUTE" || plan.phase === "VALIDATED" || plan.phase === "SPAWNED" || signalPlan.shouldMark;
-    const scoreGate = plan.phase === "EXECUTE" ? 72 : plan.phase === "VALIDATED" ? 58 : 45;
-    const shouldMark = Boolean(direction && markerTime && markerPrice && signalLifecyclePhase && quality >= scoreGate && plan.phase !== "FILTERED" && plan.phase !== "NO_TRADE");
+    const maturePhase = plan.phase === "EXECUTE" || plan.phase === "VALIDATED";
+    const scoreGate = plan.phase === "EXECUTE" ? PRECISION_RULES.minExecuteQuality : PRECISION_RULES.minWatchQuality;
+    const lastLiveBar = Number(lastCandleRef.current?.time || 0);
+    const closedSignalBar = Number(markerTime || 0) < lastLiveBar;
+    const shouldMark = Boolean(direction && markerTime && markerPrice && maturePhase && quality >= scoreGate && closedSignalBar && eliteSignalAllowed);
 
     if (!shouldMark || !direction || !markerTime || !markerPrice) {
       visualSignalKeyRef.current = `${timeframe}-${plan.phase}-${signalPlan.state}`;
       return;
     }
 
-    const cooldownBars = plan.phase === "EXECUTE" ? (timeframe === "1m" ? 8 : timeframe === "5m" ? 6 : 4) : (timeframe === "1m" ? 4 : timeframe === "5m" ? 3 : 2);
+    const cooldownBars = timeframe === "1m" ? 10 : timeframe === "5m" ? 8 : 5;
     const tfSec = TF_SECONDS[timeframe] || 300;
     const nowBar = Number(markerTime);
     const prevSmart = smartSignalRef.current;
@@ -2919,37 +3652,45 @@ useEffect(() => {
 
     if (sameDirection && inCooldown && !stronger) return;
 
-    const phaseLabel = plan.phase === "EXECUTE" ? "ENTER NOW" : plan.phase === "VALIDATED" ? "WATCH" : plan.phase === "SPAWNED" ? "ARMING" : signalPlan.state;
     const stateForMarker: SignalState = direction === "LONG"
       ? plan.phase === "EXECUTE" ? "CONFIRMED LONG" : "WATCH LONG"
       : plan.phase === "EXECUTE" ? "CONFIRMED SHORT" : "WATCH SHORT";
-    const key = `${timeframe}-${direction}-${phaseLabel}-${markerTime}`;
+    const key = `${selectedSymbol}-${timeframe}-${activeTradeMode}-${direction}-${plan.phase}-${markerTime}`;
     if (visualSignalKeyRef.current === key) return;
     visualSignalKeyRef.current = key;
 
     smartSignalRef.current = { key, direction, quality, phase: plan.phase, barTime: nowBar, expiresAt: Date.now() + cooldownBars * tfSec * 1000 };
     smartSignalCooldownRef.current = cooldownBars;
 
-    setSignalMarkers((prev) => {
-      const cleaned = prev.filter((marker) => {
-        if (marker.timeframe !== timeframe) return true;
-        if (marker.direction === direction && nowBar - marker.time < cooldownBars * tfSec) return false;
-        return true;
+    if (signalMarkerDebounceRef.current) {
+      window.clearTimeout(signalMarkerDebounceRef.current);
+    }
+    signalMarkerDebounceRef.current = window.setTimeout(() => {
+      setSignalMarkers((prev) => {
+        const cleaned = prev.filter((marker) => {
+          if (marker.timeframe !== timeframe) return true;
+          if (marker.direction === direction && nowBar - marker.time < cooldownBars * tfSec) return false;
+          return true;
+        });
+        if (cleaned.some((marker) => marker.key === key)) return cleaned;
+        const nextMarker: SignalMarker = {
+          id: Number(markerTime),
+          key,
+          timeframe,
+          time: markerTime,
+          price: markerPrice,
+          state: stateForMarker,
+          direction: direction as Exclude<SignalDirection, null>,
+          confidence: quality,
+        };
+        return [...cleaned, nextMarker].slice(-PRECISION_RULES.maxSignalMemory);
       });
-      if (cleaned.some((marker) => marker.key === key)) return cleaned;
-      const nextMarker: SignalMarker = {
-        id: Date.now(),
-        key,
-        timeframe,
-        time: markerTime,
-        price: markerPrice,
-        state: stateForMarker,
-        direction: direction as Exclude<SignalDirection, null>,
-        confidence: quality,
-      };
-      return [...cleaned, nextMarker].slice(-PRECISION_RULES.maxSignalMemory);
-    });
-  }, [decisionPlan.id, decisionPlan.phase, decisionPlan.direction, decisionPlan.markerTime, decisionPlan.entry, decisionPlan.quality, signalPlan.state, signalPlan.markerTime, signalPlan.markerPrice, signalPlan.shouldMark, signalPlan.direction, signalPlan.confidence, timeframe, eliteSignalAllowed]);
+      signalMarkerDebounceRef.current = null;
+    }, 120);
+    return () => {
+      if (signalMarkerDebounceRef.current) window.clearTimeout(signalMarkerDebounceRef.current);
+    };
+  }, [decisionPlan.id, decisionPlan.phase, decisionPlan.direction, decisionPlan.markerTime, decisionPlan.entry, decisionPlan.quality, signalPlan.state, signalPlan.markerTime, signalPlan.markerPrice, signalPlan.shouldMark, signalPlan.direction, signalPlan.confidence, timeframe, eliteSignalAllowed, selectedSymbol, activeTradeMode]);
 
 
   useEffect(() => {
@@ -2973,94 +3714,103 @@ useEffect(() => {
       reason: `${v25FinalBrain.reason} MTF ${mtfConfluence.bias}/${mtfConfluence.score}% · AI ${eliteAIScore}% · Session ${sessionSniper.mode}`,
     };
 
-    setEliteJournal((prev) => {
-      const next = [entry, ...prev].slice(0, PRECISION_RULES.journalLimit);
-      storageSet(eliteJournalKey(), next);
-      return next;
-    });
+    const timer = window.setTimeout(() => {
+      setEliteJournal((prev) => {
+        const next = [entry, ...prev].slice(0, PRECISION_RULES.journalLimit);
+        storageSet(eliteJournalKey(), next);
+        return next;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [eliteSignalAllowed, decisionPlan.phase, decisionPlan.direction, decisionPlan.entry, decisionPlan.markerTime, decisionPlan.quality, selectedSymbol, timeframe, eliteAIScore, mtfConfluence.bias, mtfConfluence.score, v25FinalBrain.reason, eliteJournal, session, setupKey, sessionSniper.mode]);
 
 
   useEffect(() => {
     if (!livePrice || !dynamicTradePlan) return;
 
-    setEliteJournal((prev) => {
-      let changed = false;
-      const next = prev.map((entry) => {
-        if (entry.result !== "OPEN") return entry;
+    const timer = window.setTimeout(() => {
+      setEliteJournal((prev) => {
+        let changed = false;
+        const next = prev.map((entry) => {
+          if (entry.result !== "OPEN") return entry;
 
-        const isLong = entry.side === "LONG";
-        const hitTP = isLong ? livePrice >= dynamicTradePlan.tp1 : livePrice <= dynamicTradePlan.tp1;
-        const hitSL = isLong ? livePrice <= dynamicTradePlan.dynamicSL : livePrice >= dynamicTradePlan.dynamicSL;
+          const closed = resolveEliteJournalClose(entry, livePrice, dynamicTradePlan);
+          if (!closed) return entry;
+          changed = true;
 
-        if (!hitTP && !hitSL && !dynamicTradePlan.earlyRiskCut) return entry;
+          return {
+            ...entry,
+            exit: closed.exit,
+            pnl: closed.pnl,
+            roi: closed.roi,
+            result: closed.result,
+            closeReason: closed.closeReason,
+            closedAt: new Date().toLocaleString(),
+          };
+        });
 
-        const exit = livePrice;
-        const { pnl, roi } = calcJournalPnL(entry, exit);
-        const isBE = Math.abs(exit - entry.entry) <= entry.entry * 0.0003;
-        const result: EliteJournalEntry["result"] = hitTP ? "WIN" : isBE ? "BE" : "LOSS";
-        const closeReason: EliteJournalEntry["closeReason"] = hitTP ? "TP_HIT" : isBE ? "BE" : dynamicTradePlan.earlyRiskCut ? "EARLY_EXIT" : "SL_HIT";
-        changed = true;
+        if (changed) {
+          storageSet(eliteJournalKey(), next);
 
-        return {
-          ...entry,
-          exit,
-          pnl,
-          roi,
-          result,
-          closeReason,
-          closedAt: new Date().toLocaleString(),
-        };
-      });
-
-      if (changed) {
-        storageSet(eliteJournalKey(), next);
-
-        const lastClosed = next.find((item, idx) => prev[idx]?.result === "OPEN" && item.result !== "OPEN");
-        if (lastClosed) {
-          const updated = updateLearningStats(
-            learningStats,
-            lastClosed.result === "WIN",
-            lastClosed.session || session,
-            lastClosed.symbol,
-            lastClosed.setup || setupKey
-          );
-          setLearningStats(updated);
-          storageSet(learningStatsKey(), updated);
+          const lastClosed = next.find((item, idx) => prev[idx]?.result === "OPEN" && item.result !== "OPEN");
+          if (lastClosed) {
+            const updated = updateLearningStats(
+              learningStats,
+              lastClosed.result === "WIN",
+              lastClosed.session || session,
+              lastClosed.symbol,
+              lastClosed.setup || setupKey
+            );
+            setLearningStats(updated);
+            storageSet(learningStatsKey(), updated);
+          }
         }
-      }
 
-      return changed ? next : prev;
-    });
+        return changed ? next : prev;
+      });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [livePrice, dynamicTradePlan, learningStats, session, setupKey]);
 
   useEffect(() => {
     if (!externalAlertSettings.enabled || !externalAlertSettings.autoDiscordSignals || !externalAlertSettings.discordWebhook) return;
-    if (!decisionPlan.direction || decisionPlan.phase !== "EXECUTE") return;
-    if (!decisionPlan.proSignal) return;
-    if (!institutionalPrecision.eliteAllowed || !v23EliteEngine.sniperAllowed) return;
-    if (decisionPlan.quality < Math.max(88, externalAlertSettings.minSignalConfidence) || v23EliteEngine.sniperScore < 92 || v25FinalBrain.masterScore < 88 || triggerValidation.quality === "WEAK" || triggerValidation.quality === "NONE") return;
-
-    const key = `${timeframe}-ELITE-${decisionPlan.direction}-${decisionPlan.markerTime || "live"}-${decisionPlan.quality}`;
-    if (lastDiscordSignalKeyRef.current === key) return;
-    lastDiscordSignalKeyRef.current = key;
-
-    sendExternalAlert(
-      "WOLVRENE DECISION SIGNAL",
-      `${decisionPlan.phase} ${decisionPlan.direction} at ${decisionPlan.entry ? formatPrice(decisionPlan.entry) : "market"}`,
-      buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL")
-    );
-  }, [externalAlertSettings.enabled, externalAlertSettings.autoDiscordSignals, externalAlertSettings.discordWebhook, externalAlertSettings.minSignalConfidence, decisionPlan.phase, decisionPlan.direction, decisionPlan.quality, decisionPlan.markerTime, decisionPlan.entry, institutionalPrecision.eliteAllowed, v23EliteEngine.sniperAllowed, v23EliteEngine.sniperScore, v25FinalBrain.masterScore, timeframe]);
+    const payload = buildDiscordSignalPayload({ symbol: selectedSymbol, brain });
+    if (!payload) return;
+    if (payload.confidence < externalAlertSettings.minSignalConfidence) return;
+    let cancelled = false;
+    void sendDiscordSignal({
+      webhook: externalAlertSettings.discordWebhook,
+      payload,
+      cooldownMs: 90_000,
+    }).then((result) => {
+      if (cancelled) return;
+      setDiscordSentState(result.sent);
+      if (result.sent) {
+        sendExternalAlert(
+          "WOLVRENE DECISION SIGNAL",
+          `${payload.direction} ${payload.symbol} at ${formatPrice(payload.entry)}`,
+          buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL")
+        );
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [externalAlertSettings.enabled, externalAlertSettings.autoDiscordSignals, externalAlertSettings.discordWebhook, externalAlertSettings.minSignalConfidence, selectedSymbol, brain, sendExternalAlert]);
 
 
   useEffect(() => {
-    updateSessionClock();
-    getMarketStats();
+    const initialTimer = window.setTimeout(() => {
+      updateSessionClock();
+      getMarketStats();
+    }, 0);
 
     const clockTimer = setInterval(updateSessionClock, 1000);
     const statsTimer = setInterval(getMarketStats, 15000);
 
     return () => {
+      window.clearTimeout(initialTimer);
       clearInterval(clockTimer);
       clearInterval(statsTimer);
     };
@@ -3181,7 +3931,7 @@ useEffect(() => {
             };
 
       try {
-        candleSeriesRef.current?.update(updatedCandle);
+        candleSeriesRef.current?.update(toChartCandle(updatedCandle));
         lastCandleRef.current = updatedCandle;
         setRecentCandles((prev) => { const sameBar = prev.length && prev[prev.length - 1]?.time === updatedCandle.time; const next = sameBar ? [...prev.slice(0, -1), updatedCandle] : [...prev, updatedCandle]; return next.slice(-PRECISION_RULES.candleHistory); });
       } catch {}
@@ -3246,9 +3996,11 @@ useEffect(() => {
       ws.onmessage = (event) => {
         if (event.data === "pong") return;
 
-        let msg: any;
+        let msg: unknown;
         try { msg = JSON.parse(event.data); } catch { return; }
-        const lastPriceRaw = msg?.data?.[0]?.lastPr;
+        if (!msg || typeof msg !== "object" || !("data" in msg)) return;
+        const payload = msg as { data?: Array<{ lastPr?: string }> };
+        const lastPriceRaw = payload.data?.[0]?.lastPr;
         if (!lastPriceRaw) return;
 
         const price = Number(lastPriceRaw);
@@ -3486,6 +4238,23 @@ useEffect(() => {
 
   const selectedSymbolMeta = TRADE_SYMBOLS.find((item) => item.symbol === selectedSymbol) || TRADE_SYMBOLS[0];
   const selectedSymbolLabel = selectedSymbolMeta.label;
+  const unifiedLiveContext = useMemo(() => ({
+    symbol: selectedSymbol,
+    timeframe,
+    mode: activeTradeMode,
+    livePrice,
+    session,
+    volatility: candlesSummary.volatility,
+    trend: candlesSummary.trend,
+    structure: structureState,
+    liquidity: liquidityState,
+    openTrade: activeExecutionTrade || selectedOrder || null,
+    activeSignal: decisionPlan,
+    aiDecision: v25FinalBrain.action,
+    riskSettings: { marginMode, leverage: executionLeverage, riskPerTradePct: "--" },
+    journalStats: realAccuracyStats,
+    heartbeat: lastEngineHeartbeat,
+  }), [selectedSymbol, timeframe, activeTradeMode, livePrice, session, candlesSummary.volatility, candlesSummary.trend, structureState, liquidityState, activeExecutionTrade, selectedOrder, decisionPlan, v25FinalBrain.action, marginMode, executionLeverage, realAccuracyStats, lastEngineHeartbeat]);
   const unifiedRadarMode =
     v25FinalBrain.action === "ENTER NOW"
       ? "HUNT READY"
@@ -3747,11 +4516,11 @@ useEffect(() => {
                 </select>
               </div>
               <div className="grid gap-3 text-sm md:grid-cols-5">
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Signals</p><p className="text-2xl font-black">{eliteBacktest.totalSignals}</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Tested</p><p className="text-2xl font-black">{eliteBacktest.tested}</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Win Rate</p><p className="text-2xl font-black text-green-400">{eliteBacktest.winRate}%</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">PF</p><p className="text-2xl font-black text-yellow-400">{eliteBacktest.profitFactor}</p></div>
-                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Avg Score</p><p className="text-2xl font-black text-cyan-400">{eliteBacktest.avgScore}%</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Signals</p><p className="text-2xl font-black">{backtestStats.trades}</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Wins</p><p className="text-2xl font-black">{backtestStats.wins}</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Win Rate</p><p className="text-2xl font-black text-green-400">{backtestStats.winRate.toFixed(2)}%</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">PF</p><p className="text-2xl font-black text-yellow-400">{backtestStats.profitFactor.toFixed(2)}</p></div>
+                <div className="rounded-xl border border-zinc-800 bg-black/40 p-3"><p className="text-gray-500">Best Session</p><p className="text-xl font-black text-cyan-400">{backtestStats.bestSession}</p></div>
               </div>
             </div>
           )}
@@ -3767,10 +4536,12 @@ useEffect(() => {
                 </div>
                 <div className="rounded-xl border border-zinc-800 bg-black/40 p-3">
                   <p className="text-gray-500">Live Trade</p>
-                  <p className={liveTradeManagement.exitWarning ? "text-xl font-black text-red-400" : "text-xl font-black text-green-400"}>
-                    {liveTradeManagement.status}
+                  <p className={activeExecutionTradeView ? "text-xl font-black text-green-400" : "text-xl font-black text-gray-400"}>
+                    {activeExecutionTradeView ? `${activeExecutionTradeView.side} ${activeExecutionTradeView.status}` : "NO ACTIVE TRADE"}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500">PnL: {liveTradeManagement.pnl.toFixed(2)} · BE: {liveTradeManagement.moveBE ? "YES" : "NO"}</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    PnL: {activeExecutionTradeView && livePrice ? (((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2)) : "0.00"} · BE: {activeExecutionTradeView?.status === "BREAKEVEN" ? "YES" : "NO"}
+                  </p>
                 </div>
                 <div className="rounded-xl border border-zinc-800 bg-black/40 p-3">
                   <p className="text-gray-500">Dynamic TP/SL</p>
@@ -3816,12 +4587,45 @@ useEffect(() => {
                       {session}
                     </p>
                     <p className="text-xs text-gray-600 mt-2">Next phase: {sessionCountdown}</p>
+                    <p className="text-xs text-gray-500 mt-1">Heartbeat: {lastEngineHeartbeat}</p>
                   </div>
 
                   <div className={`${card} p-5`}>
                     <h2 className="text-sm text-gray-400 font-semibold">Wolf Radar</h2>
                     <p className="text-3xl font-black text-yellow-500 mt-2">{unifiedRadarMode}</p>
                     <p className="text-xs text-gray-600 mt-2">Brain Bias: {v25FinalBrain.displayBias || bias}</p>
+                    <p className="text-xs text-gray-500 mt-1">Mode: {activeTradeMode} ({tradeModeSelection})</p>
+                  </div>
+                </div>
+
+                <div className="grid md:grid-cols-3 gap-3 mb-4">
+                  <div className={`${card} p-4`}>
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] text-gray-500 uppercase tracking-wider">Signal Lifecycle</p>
+                      <span className="text-[10px] rounded-full bg-yellow-500/15 border border-yellow-600/30 px-2 py-0.5 text-yellow-400">{signalLifecycleState}</span>
+                    </div>
+                    <p className="mt-2 text-sm text-gray-300">{brainDecision.phase} · {brainDecision.direction || "WAIT"}</p>
+                    <p className="mt-1 text-xs text-gray-500">Candidate / Waiting / Rejected / Executed / Managed / Cancelled</p>
+                  </div>
+                  <div className={`${card} p-4`}>
+                    <p className="text-[11px] text-gray-500 uppercase tracking-wider">Signal State</p>
+                    {signalRejectionReasons.length ? (
+                      <ul className="mt-2 space-y-1 text-xs text-yellow-500">
+                        {signalRejectionReasons.slice(0, 3).map((reason) => <li key={reason}>• {reason}</li>)}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-xs text-green-400">Candidate valid. Waiting for trigger-to-execute alignment.</p>
+                    )}
+                  </div>
+                  <div className={`${card} p-4`}>
+                    <p className="text-[11px] text-gray-500 uppercase tracking-wider">Fallback Watch</p>
+                    <p className="mt-2 text-xs text-gray-300">
+                      {brainDecision.phase === "SCANNING"
+                        ? `No trade yet, watching for ${triggerValidation.direction || "directional trigger"} confirmation.`
+                        : "Active setup live. Monitor invalidation and execution quality."}
+                    </p>
+                    <p className="mt-2 text-[11px] text-gray-500">Entry Grade: <span className="text-yellow-400 font-bold">{entryGrade}</span> · Cooldown cycles: {tradeRecalcCooldownCycles}</p>
+                    <p className="mt-1 text-[11px] text-gray-500">Swing plan: {activeTradeMode === "SWING" ? `Bias ${brainDecision.direction || "WAIT"} · Zone ${brainDecision.entry ? formatPrice(brainDecision.entry) : "--"} · Invalid ${brainDecision.invalidation ? formatPrice(brainDecision.invalidation) : "--"}` : "Scalp mode active"}</p>
                   </div>
                 </div>
 
@@ -3839,6 +4643,28 @@ useEffect(() => {
                     </div>
                   ))}
                 </div>
+
+                <div className={`${card} p-4 mb-4`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-bold text-gray-300">Signal Feed</h3>
+                    <span className="text-[10px] text-gray-500">{signalFeedRows.length} rows</span>
+                  </div>
+                  <div className="space-y-1 max-h-40 overflow-auto">
+                    {signalFeedRows.length === 0 && <p className="text-xs text-gray-500">No subscribed signal rows yet.</p>}
+                    {signalFeedRows.map((row) => (
+                      <button
+                        key={row.id}
+                        onClick={() => {
+                          setSelectedSignalId(row.id);
+                          setTimeframe(row.timeframe);
+                        }}
+                        className={`w-full text-left rounded-lg border px-2 py-1 text-[11px] ${selectedSignalId === row.id ? "border-yellow-600 bg-yellow-500/10" : "border-zinc-800 bg-black/30"}`}
+                      >
+                        {row.time} | {row.symbol} | {row.timeframe} | {row.mode} | {row.side} | {row.status} | {row.confidence}% | {row.reason}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </>
             )}
 
@@ -3853,7 +4679,21 @@ useEffect(() => {
                 </div>
 
                 <div className="flex flex-wrap gap-1.5 items-center rounded-2xl bg-black/50 border border-zinc-800 p-1.5">
-                  {["1m", "5m", "15m", "1H", "4H"].map((tf) => (
+                  {(["AUTO", "SCALP", "SWING"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => applyTradeModeSelection(mode)}
+                      className={`h-7 min-w-12 px-2 rounded-lg text-[10px] border transition ${
+                        tradeModeSelection === mode
+                          ? "bg-yellow-600 border-yellow-500 text-black font-black"
+                          : "bg-[#08080a] border-[#27272f] text-gray-300 hover:text-white hover:border-yellow-700"
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+
+                  {(["1m", "5m", "15m", "1H"] as const).map((tf) => (
                     <button
                       key={tf}
                       onClick={() => setTimeframe(tf)}
@@ -3872,9 +4712,18 @@ useEffect(() => {
                     onChange={(e) => setTimeframe(e.target.value)}
                     className="h-7 bg-[#08080a] border border-[#27272f] rounded-lg px-2 text-[11px] text-white outline-none hover:border-yellow-700"
                   >
-                    {TIMEFRAMES.map((tf) => (
-                      <option key={tf} value={tf}>
-                        {tf}
+                    {[
+                      { label: "1m", value: "1m" },
+                      { label: "3m", value: "3m" },
+                      { label: "5m", value: "5m" },
+                      { label: "15m", value: "15m" },
+                      { label: "30m", value: "30m" },
+                      { label: "1h", value: "1H" },
+                      { label: "4h", value: "4H" },
+                      { label: "1D", value: "1D" },
+                    ].map((tf) => (
+                      <option key={tf.value} value={tf.value}>
+                        {tf.label}
                       </option>
                     ))}
                   </select>
@@ -3925,6 +4774,50 @@ useEffect(() => {
                   <p className="mt-1 text-[10px] text-yellow-300">State: {v25FinalBrain.activeTradeState} · Entry: {v25FinalBrain.entryQuality} · TP hits: {v25FinalBrain.tpHitCount}</p>
                   <p className="mt-1 text-[9px] text-gray-500">Unified brain · closed-candle signals · cooldown protected · stable memory</p>
                 </div>
+                {activeExecutionTradeView && activeExecutionTradeView.timeframe !== timeframe && (
+                  <div className="absolute right-3 top-3 z-40 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-300">
+                    Active {activeExecutionTradeView.timeframe} {activeExecutionTradeView.side}
+                  </div>
+                )}
+
+                {tradeMarkers.map((marker) => {
+                  const left = timeToLeft(marker.openedAt);
+                  const top = priceToTop(marker.entry);
+                  if (left === null || top === null) return null;
+                  const isLong = marker.side === "LONG";
+                  return (
+                    <div
+                      key={`tm-${marker.id}`}
+                      className="absolute z-30 pointer-events-none"
+                      style={{ left: Math.max(4, left - 4), top: isLong ? top + 8 : top - 12 }}
+                      title={`${isLong ? "LONG" : "SHORT"} ${marker.timeframe} ${marker.mode} · Entry ${formatPrice(marker.entry)} · SL ${formatPrice(marker.sl)} · TP1 ${formatPrice(marker.tp1)}${marker.result ? ` · ${marker.result}` : ""}`}
+                    >
+                      <div className={isLong ? "h-2 w-2 rounded-full bg-green-400/90 border border-green-200/60" : "h-2 w-2 rounded-full bg-rose-400/90 border border-rose-200/60"} />
+                      <div className={`-mt-1 text-[7px] font-black ${isLong ? "text-green-300" : "text-rose-300"}`}>{isLong ? "L" : "S"}</div>
+                    </div>
+                  );
+                })}
+
+                {activeExecutionTradeView && activeExecutionTradeView.timeframe === timeframe && (
+                  <>
+                    {[{ label: `${activeExecutionTradeView.side} ENTRY`, price: activeExecutionTradeView.entry, color: activeExecutionTradeView.side === "LONG" ? "#22c55e" : "#ef4444" },
+                      { label: activeExecutionTradeView.status === "BREAKEVEN" ? "SL @ BE" : "SL", price: activeExecutionTradeView.sl, color: "#ef4444" },
+                      { label: "TP1", price: activeExecutionTradeView.tp1, color: activeExecutionTradeView.tp1Hit ? "#86efac" : "#22c55e" },
+                      { label: "TP2", price: activeExecutionTradeView.tp2, color: activeExecutionTradeView.tp2Hit ? "#86efac" : "#22c55e" },
+                      { label: "TP3", price: activeExecutionTradeView.tp3, color: activeExecutionTradeView.tp3Hit ? "#86efac" : "#22c55e" }].map((line) => {
+                      const top = priceToTop(line.price);
+                      if (top === null) return null;
+                      return (
+                        <div key={`exec-line-${line.label}`} className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top }}>
+                          <div style={{ borderTop: `1px dashed ${line.color}` }} />
+                          <div className="absolute right-3 -top-3 rounded-md border px-1.5 py-0.5 text-[9px] font-black" style={{ borderColor: line.color, color: line.color, background: "rgba(0,0,0,0.65)" }}>
+                            {line.label}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
 
                 {alerts.map((alert) => (
                   <LineButton
@@ -4064,13 +4957,13 @@ useEffect(() => {
                         style={{ left: Math.max(6, left - 14), top: isLong ? top + 12 : top - 24 }}
                       >
                         <div
-                          className={`rounded-md border px-1.5 py-0.5 text-[8px] font-black shadow-[0_0_18px_rgba(0,0,0,0.85)] ${
+                          className={`h-3 w-3 rounded-full border text-[7px] font-black flex items-center justify-center shadow-[0_0_18px_rgba(0,0,0,0.85)] ${
                             isLong
-                              ? "border-green-500/70 bg-green-500/20 text-green-300"
-                              : "border-red-500/70 bg-red-500/20 text-red-300"
+                              ? "border-green-500/70 bg-green-500/30 text-green-200"
+                              : "border-red-500/70 bg-red-500/30 text-red-200"
                           }`}
                         >
-                          {isLong ? `L ${marker.confidence}%` : `S ${marker.confidence}%`}
+                          {isLong ? "L" : "S"}
                         </div>
                       </div>
                     );
@@ -4277,10 +5170,10 @@ useEffect(() => {
                   <div className="mt-4 rounded-2xl border border-yellow-700/30 bg-yellow-500/[0.045] p-3 text-xs space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-yellow-500 font-black">DECISION BRAIN</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${decisionPlan.phase === "EXECUTE" ? "bg-green-500/20 text-green-300" : decisionPlan.phase === "FILTERED" ? "bg-red-500/20 text-red-300" : "bg-zinc-800 text-gray-300"}`}>{decisionPlan.phase}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${brainDecision.phase === "EXECUTE" ? "bg-green-500/20 text-green-300" : brainDecision.phase === "SCANNING" ? "bg-red-500/20 text-red-300" : "bg-zinc-800 text-gray-300"}`}>{brainDecision.phase}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-xl bg-black/60 border border-zinc-800 p-2"><span className="text-gray-500">Quality</span><p className="font-black text-yellow-400">{decisionPlan.quality}%</p></div>
+                      <div className="rounded-xl bg-black/60 border border-zinc-800 p-2"><span className="text-gray-500">Quality</span><p className="font-black text-yellow-400">{brainConfidence}%</p></div>
                       <div className="rounded-xl bg-black/60 border border-zinc-800 p-2"><span className="text-gray-500">Trigger</span><p className="font-black">{decisionPlan.trigger}</p></div>
                       <div className="rounded-xl bg-black/60 border border-zinc-800 p-2"><span className="text-gray-500">Structure</span><p className="font-black">{decisionPlan.structure}</p></div>
                       <div className="rounded-xl bg-black/60 border border-zinc-800 p-2"><span className="text-gray-500">Liquidity</span><p className="font-black">{decisionPlan.liquidity}</p></div>
@@ -4293,6 +5186,59 @@ useEffect(() => {
                   </div>
                 )}
 
+                <div className="mt-4 rounded-2xl border border-cyan-700/30 bg-cyan-500/[0.05] p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-cyan-300">TRIGGER CHECKLIST</span>
+                    <span className="text-[10px] text-gray-400">{activeTradeMode}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      ["Structure", triggerChecklist.structure],
+                      ["Liquidity", triggerChecklist.liquidity],
+                      ["Volume", triggerChecklist.volume],
+                      ["Trigger", triggerChecklist.trigger],
+                      ["RR", triggerChecklist.rr],
+                      ["Session", triggerChecklist.session],
+                    ].map(([label, ok]) => (
+                      <div key={String(label)} className="rounded-lg border border-zinc-800 bg-black/50 px-2 py-1 flex items-center justify-between">
+                        <span className="text-gray-400">{label}</span>
+                        <span className={ok ? "text-green-400" : "text-red-400"}>{ok ? "✔" : "✖"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-green-700/30 bg-green-500/[0.04] p-3 text-xs space-y-2 sticky top-2 z-20">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-green-300">ACTIVE TRADE PANEL · PRIORITY</span>
+                    <span className="text-[10px] text-gray-400">{activeExecutionTradeView?.status || "NO ACTIVE TRADE"}</span>
+                  </div>
+                  {activeExecutionTradeView ? (
+                    <>
+                      <div className="flex justify-between"><span className="text-gray-500">Side</span><span className={activeExecutionTradeView.side === "LONG" ? "text-green-400" : "text-red-400"}>{activeExecutionTradeView.side}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Entry / Live</span><span>{formatPrice(activeExecutionTradeView.entry)} / {livePrice ? formatPrice(livePrice) : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">PnL $</span><span>{livePrice ? (((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2)) : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">PnL %</span><span>{livePrice ? ((((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size) / Math.max(activeExecutionTradeView.margin, 0.0001) * 100).toFixed(2) + "%") : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">SL</span><span className="text-red-300">{formatPrice(activeExecutionTradeView.sl)}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">TP1/2/3</span><span>{activeExecutionTradeView.tp1Hit ? "✔" : "·"} / {activeExecutionTradeView.tp2Hit ? "✔" : "·"} / {activeExecutionTradeView.tp3Hit ? "✔" : "·"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Dist TP1 / SL</span><span>{livePrice ? `${Math.abs(activeExecutionTradeView.tp1 - livePrice).toFixed(2)} / ${Math.abs(activeExecutionTradeView.sl - livePrice).toFixed(2)}` : "--"}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Time In Trade</span><span>{Math.max(0, Math.floor((Date.now() - normalizeEpochMs(activeExecutionTradeView.openedAt)) / 60000))}m</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Current Action</span><span>{managementBrain.action}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Risk State</span><span>{decisionPlan.risk}</span></div>
+                    </>
+                  ) : (
+                    <p className="text-gray-500">No Active Trade. Engine is waiting for VALIDATE → EXECUTE conditions.</p>
+                  )}
+                  {lastClosedExecutionTrade && (
+                    <div className="mt-2 rounded-xl border border-zinc-800 bg-black/50 p-2">
+                      <p className="text-[10px] text-gray-400 mb-1">Last Closed Trade</p>
+                      <div className="flex justify-between"><span className="text-gray-500">Side / TF</span><span>{lastClosedExecutionTrade.side} · {lastClosedExecutionTrade.timeframe}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Status</span><span>{lastClosedExecutionTrade.status}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Close Reason</span><span>{lastClosedExecutionTrade.status}</span></div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-2 gap-2 mt-4 text-xs">
                   <button onClick={() => { setAiOpen(true); setAiTab("chat"); }} className="rounded-xl border border-yellow-700/50 bg-yellow-500/10 p-3 text-yellow-400 hover:bg-yellow-500/20">
                     Open AI
@@ -4302,14 +5248,14 @@ useEffect(() => {
                   </button>
                   <button
                     onClick={useSignalPlan}
-                    disabled={!decisionPlan.direction || decisionPlan.phase === "NO_TRADE" || decisionPlan.phase === "SCANNING" || decisionPlan.phase === "FILTERED"}
+                    disabled={!brainDecision.direction || brainDecision.phase === "SCANNING" || Boolean(activeExecutionTradeView)}
                     className="rounded-xl border border-green-700/50 bg-green-500/10 p-3 text-green-400 hover:bg-green-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-black disabled:text-gray-600"
                   >
                     Use Signal
                   </button>
                   <button
                     onClick={sendDiscordSignalNow}
-                    disabled={!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook || !decisionPlan.direction || decisionPlan.phase === "NO_TRADE" || decisionPlan.phase === "SCANNING" || decisionPlan.phase === "FILTERED"}
+                    disabled={!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook || !brainDecision.direction || brainDecision.phase === "SCANNING"}
                     className="rounded-xl border border-indigo-700/50 bg-indigo-500/10 p-3 text-indigo-300 hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-black disabled:text-gray-600"
                     title="Send compact signal format to Discord"
                   >
@@ -4393,7 +5339,7 @@ useEffect(() => {
 
                   <div className="grid grid-cols-2 gap-2">
                     <label className="block">
-                      <span className="text-[11px] text-gray-500">Margin USDT</span>
+                      <span className="text-[11px] text-gray-500">Amount USDT</span>
                       <input
                         type="number"
                         value={draftUsd}
@@ -4416,9 +5362,9 @@ useEffect(() => {
                 </div>
 
                 <div className="rounded-xl bg-black/60 border border-zinc-800 p-3 mb-3 text-xs space-y-2">
-                  <div className="flex justify-between"><span className="text-gray-500">Margin / Cost</span><span className="text-yellow-400">{estimatedMargin.toFixed(2)} USDT</span></div>
-                  <div className="flex justify-between"><span className="text-gray-500">Effective Notional</span><span>{estimatedNotional.toFixed(2)} USDT</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Notional</span><span>{estimatedNotional.toFixed(2)} USDT</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">Base Size</span><span>{executionSize.toFixed(6)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Required Margin</span><span className="text-yellow-400">{estimatedMargin.toFixed(4)} USDT</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">Mode</span><span>{marginMode === "isolated" ? "Isolated" : "Cross"}</span></div>
                 </div>
 
@@ -4682,9 +5628,9 @@ useEffect(() => {
                           <div className="rounded-2xl border border-yellow-700/40 bg-yellow-500/5 p-4">
                             <div className="flex items-center gap-3">
                               <span className="h-2 w-2 animate-pulse rounded-full bg-yellow-500" />
-                              <p className="text-sm text-yellow-400 font-bold">WOLVRENE AI is thinking with live dashboard context...</p>
+                              <p className="text-sm text-yellow-400 font-bold">WOLVRENE AI is processing sanitized UnifiedWolvreneBrain context...</p>
                             </div>
-                            <p className="mt-2 text-xs text-gray-500">Sending price, timeframe, session, orders, alerts, TP/SL, bias, confidence, and selected trade to the AI bridge.</p>
+                            <p className="mt-2 text-xs text-gray-500">AI reads sanitized brain payload + selected trade context + live context (no raw candles or indicator internals).</p>
                           </div>
                         )}
 
@@ -4726,16 +5672,22 @@ useEffect(() => {
                         <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                           <p className="text-xs text-yellow-500 mb-3 font-bold">LIVE CONTEXT SNAPSHOT</p>
                           <div className="grid md:grid-cols-2 gap-3 text-sm">
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Symbol</span><span>{selectedSymbol}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Timeframe</span><span>{timeframe}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Live Price</span><span>{aiContext.mark ? formatPrice(aiContext.mark) : "Waiting"}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Session</span><span>{session}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Bias</span><span>{bias}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Confidence</span><span>{confidence}%</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Symbol</span><span>{unifiedLiveContext.symbol}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Timeframe</span><span>{unifiedLiveContext.timeframe}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Mode</span><span>{unifiedLiveContext.mode}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Live Price</span><span>{livePrice ? formatPrice(livePrice) : "Waiting"}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Session</span><span>{unifiedLiveContext.session}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Direction</span><span>{sanitizedBrainPayload.direction || "WAIT"}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Confidence</span><span>{sanitizedBrainPayload.confidence}%</span></div>
                             <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Orders</span><span>{orders.length}</span></div>
                             <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Alerts</span><span>{alerts.length}</span></div>
                             <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Funding</span><span>{marketStats.funding}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">24H Change</span><span>{marketStats.change}</span></div>\n                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Candles Trend</span><span>{candlesSummary.trend}</span></div>\n                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Volatility</span><span>{candlesSummary.volatility} · {candlesSummary.rangePct.toFixed(2)}%</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">24H Change</span><span>{marketStats.change}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Candles Trend</span><span>{unifiedLiveContext.trend}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Volatility</span><span>{unifiedLiveContext.volatility} · {candlesSummary.rangePct.toFixed(2)}%</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Heartbeat</span><span>{unifiedLiveContext.heartbeat}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">AI Source</span><span>{aiContext.source}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Strategy</span><span>{sanitizedBrainPayload.strategyProfile.name}</span></div>
                           </div>
                         </div>
 
@@ -4769,6 +5721,22 @@ useEffect(() => {
                             <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Gross Win / Loss</span><span>{backtestStats.grossWin.toFixed(2)} / {backtestStats.grossLoss.toFixed(2)}</span></div>
                           </div>
                         </div>
+                        <div className="rounded-2xl border border-zinc-800 bg-black/70 p-4">
+                          <p className="text-xs text-yellow-500 mb-3 font-bold">STRATEGY PERFORMANCE (LOGGED TRADES)</p>
+                          {strategyPerformance.length === 0 ? (
+                            <p className="text-sm text-gray-400">No closed logged trades yet.</p>
+                          ) : (
+                            <div className="space-y-2 text-xs">
+                              {strategyPerformance.slice(0, 6).map((item) => (
+                                <div key={item.strategyName} className="rounded-xl border border-zinc-800 bg-black/60 p-3">
+                                  <p className="text-yellow-300 font-bold">{item.strategyName}</p>
+                                  <p className="text-gray-300">Trades: {item.tradeCount} · Win Rate: {item.winRate}% · Avg RR: {item.avgRR}</p>
+                                  <p className="text-gray-500">Best Session: {item.bestSession} · Worst Session: {item.worstSession} · Drawdown: {item.drawdown}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -4777,9 +5745,9 @@ useEffect(() => {
                         <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                           <p className="text-xs text-yellow-500 mb-3 font-bold">ADAPTIVE LEARNING ENGINE</p>
                           <div className="grid md:grid-cols-2 gap-3 text-sm">
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Wins / Losses</span><span>{learningWeights.wins} / {learningWeights.losses}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Current Session Weight</span><span>{(learningWeights.session[session] || 0).toFixed(2)}</span></div>
-                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Current TF Weight</span><span>{(learningWeights.timeframe[timeframe] || 0).toFixed(2)}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Wins / Losses</span><span>{learningStats.wins} / {learningStats.losses}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Total Samples</span><span>{learningStats.total}</span></div>
+                            <div className="flex justify-between rounded-xl bg-black/60 border border-zinc-800 p-3"><span className="text-gray-500">Current Boost</span><span>{learningBoost}</span></div>
                           </div>
                           <button onClick={() => setLearningWeights(defaultLearningWeights)} className="mt-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-xs text-red-300 hover:bg-red-500/20">Reset Learning Weights</button>
                         </div>
@@ -4809,6 +5777,24 @@ useEffect(() => {
                           <input type="number" min={1} max={100} value={externalAlertSettings.minSignalConfidence} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, minSignalConfidence: Math.max(1, Math.min(100, Number(e.target.value) || 62)) }))} className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
                           <input value={externalAlertSettings.telegramWebhook} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, telegramWebhook: e.target.value }))} placeholder="Telegram / bot webhook URL" className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
                           <input value={externalAlertSettings.emailWebhook} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, emailWebhook: e.target.value }))} placeholder="Email webhook URL" className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
+                          <div className="rounded-xl border border-zinc-800 bg-black/60 p-3 space-y-2">
+                            <p className="text-[11px] font-black text-yellow-500">Signal Subscriptions</p>
+                            <div className="grid grid-cols-4 gap-1 text-[10px]">
+                              {["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"].map((tf) => (
+                                <label key={tf} className="flex items-center gap-1">
+                                  <input type="checkbox" checked={signalSubscriptionSettings.timeframes[tf] !== false} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, timeframes: { ...p.timeframes, [tf]: e.target.checked } }))} />
+                                  <span>{tf}</span>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <label className="flex items-center gap-1"><input type="checkbox" checked={signalSubscriptionSettings.modes.SCALP} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, modes: { ...p.modes, SCALP: e.target.checked } }))} /><span>SCALP</span></label>
+                              <label className="flex items-center gap-1"><input type="checkbox" checked={signalSubscriptionSettings.modes.SWING} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, modes: { ...p.modes, SWING: e.target.checked } }))} /><span>SWING</span></label>
+                            </div>
+                            <input type="number" value={signalSubscriptionSettings.minConfidence} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, minConfidence: Math.max(1, Math.min(100, Number(e.target.value) || 70)) }))} className="w-full rounded-lg border border-zinc-800 bg-black px-2 py-1 text-xs" />
+                            <input type="number" value={signalSubscriptionSettings.maxFeedRows} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, maxFeedRows: Math.max(3, Math.min(50, Number(e.target.value) || 12)) }))} className="w-full rounded-lg border border-zinc-800 bg-black px-2 py-1 text-xs" />
+                            <label className="flex items-center justify-between"><span>Allow Multi-Timeframe Trades</span><input type="checkbox" checked={signalSubscriptionSettings.allowMultiTimeframeTrades} onChange={(e) => setSignalSubscriptionSettings((p) => ({ ...p, allowMultiTimeframeTrades: e.target.checked }))} /></label>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -4831,6 +5817,20 @@ useEffect(() => {
                 </div>
 
                 <div className="border-l border-zinc-800 bg-black/35 p-4 space-y-3 overflow-y-auto overscroll-contain">
+                  <div className="rounded-2xl border border-zinc-800 bg-black/70 p-3">
+                    <p className="text-[11px] text-gray-500 mb-2">Explanation Mode</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["Beginner", "Trader", "Pro"] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          onClick={() => setAiExplanationMode(mode)}
+                          className={`rounded-lg px-2 py-1 text-xs border ${aiExplanationMode === mode ? "border-yellow-500 bg-yellow-500/15 text-yellow-300" : "border-zinc-800 text-gray-400 hover:border-yellow-700"}`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <h3 className="text-sm font-bold text-gray-300">Quick Actions</h3>
                   {[
                     ["analyze", "Analyze BTC Now"],
@@ -4850,7 +5850,7 @@ useEffect(() => {
 
                   <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                     <p className="text-xs text-yellow-500 mb-2">AI Bridge Status: {aiBridgeStatus.toUpperCase()}</p>
-                    <p className="text-xs leading-5 text-gray-400">Live AI Bridge: The window now calls /api/ai, sends live dashboard context, shows thinking state, and keeps chat scroll working. Add OPENAI_API_KEY in .env.local for real model replies.</p>
+                    <p className="text-xs leading-5 text-gray-400">AI reads sanitized UnifiedWolvreneBrain payload plus selected-trade/live context with intent guard + rate protection. No raw candles or indicator internals are sent.</p>
                   </div>
                 </div>
               </div>
@@ -5261,3 +6261,4 @@ export async function POST(req: Request) {
     message: active ? "Access granted" : "No active VIP subscription found",
   });
 }
+*/
