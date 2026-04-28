@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client";
-// WOLVRENE v37 UNIFIED PRECISION PATCH — PRIVATE VIP TERMINAL
-// v36 base + unified settings persistence, USDT sizing, execute-only trade data, safer AI context, and cleaner live trade management.
+// WOLVRENE v38 SIGNAL ENGINE + REAL MARGIN PATCH — PRIVATE VIP TERMINAL
+// v37 base + real margin-USDT sizing, visible signal lifecycle, stronger marker engine, and Decision Brain / trade panel sync fixes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -689,6 +689,10 @@ function calcBaseSizeFromUsd(notionalUsd: number, price: number) {
 function calcUsdFromBaseSize(size: number, price: number) {
   if (!Number.isFinite(size) || !Number.isFinite(price) || price <= 0) return 0;
   return Math.max(0, size * price);
+}
+function calcNotionalFromMargin(marginUsd: number, leverage: number) {
+  if (!Number.isFinite(marginUsd) || !Number.isFinite(leverage)) return 0;
+  return Math.max(0, marginUsd * Math.max(1, leverage));
 }
 function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
   return Boolean(plan?.direction && (plan.phase === "EXECUTE" || plan.phase === "MANAGE" || plan.phase === "EXIT"));
@@ -1655,8 +1659,8 @@ const impulseBoost =
 
     return {
       markers: markers
-        .filter((marker) => marker.kind === "DECISION" || marker.kind === "BOS" || marker.kind === "CHOCH" || marker.kind === "SWEEP")
-        .filter((marker) => marker.kind !== "DECISION" || marker.strength >= PRECISION_RULES.minWatchQuality)
+        .filter((marker) => marker.kind === "DECISION" || marker.kind === "BOS" || marker.kind === "CHOCH" || marker.kind === "SWEEP" || marker.kind === "TRIGGER")
+        .filter((marker) => marker.kind !== "DECISION" || marker.strength >= 50)
         .slice(-PRECISION_RULES.maxVisibleDecisionMarkers),
       zones: zones
         .filter((zone) => Math.abs(last.close - zone.price) <= avgRange * 4.5)
@@ -1908,11 +1912,12 @@ const impulseBoost =
 
   const confidence = signalPlan.confidence;
   const executionPrice = Number(draftPrice) || livePrice || lastCandleRef.current?.close || 0;
-  const executionUsd = Math.max(0, Number(draftUsd) || 0);
+  // draftUsd now means MARGIN / COST in USDT, like exchange panels. Example: 100 USDT at 50x = 5,000 USDT notional.
+  const executionMargin = Math.max(0, Number(draftUsd) || 0);
   const executionLeverage = clampLeverage(draftLeverage);
-  const executionSize = calcBaseSizeFromUsd(executionUsd, executionPrice);
-  const estimatedNotional = executionUsd;
-  const estimatedMargin = executionLeverage ? executionUsd / executionLeverage : 0;
+  const estimatedMargin = executionMargin;
+  const estimatedNotional = calcNotionalFromMargin(executionMargin, executionLeverage);
+  const executionSize = calcBaseSizeFromUsd(estimatedNotional, executionPrice);
 
   useEffect(() => {
     timeframeRef.current = timeframe;
@@ -1928,9 +1933,9 @@ const impulseBoost =
   }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI]);
 
   useEffect(() => {
-    if (!executionPrice || !executionUsd) return;
+    if (!executionPrice || !executionMargin) return;
     setDraftSize(executionSize ? executionSize.toFixed(6) : "0");
-  }, [executionPrice, executionUsd, executionSize]);
+  }, [executionPrice, executionMargin, executionSize]);
 
   useEffect(() => {
     selectedSymbolRef.current = selectedSymbol;
@@ -2269,10 +2274,10 @@ useEffect(() => {
     const price = basePrice || (orderType === "limit" ? Number(draftPrice) : livePrice) || livePrice || lastCandleRef.current?.close;
     if (!price) return;
 
-    const notionalUsd = Math.max(1, Number(draftUsd) || 0);
-    const size = Math.max(0.000001, calcBaseSizeFromUsd(notionalUsd, price));
     const leverage = clampLeverage(draftLeverage);
-    const marginUsd = leverage ? notionalUsd / leverage : notionalUsd;
+    const marginUsd = Math.max(1, Number(draftUsd) || 0);
+    const notionalUsd = calcNotionalFromMargin(marginUsd, leverage);
+    const size = Math.max(0.000001, calcBaseSizeFromUsd(notionalUsd, price));
 
     const order = {
       ...createOrderFromPrice(side, price),
@@ -2784,25 +2789,6 @@ useEffect(() => {
     return `${header}\n\nAI read: ${aiInsights[0] || "Waiting for cleaner context."}\n\nCurrent mark: ${formatPrice(mark)}.\nActive orders: ${activeOrders}. Alerts: ${activeAlerts}.\nNext action: wait for a clean trigger, then manage risk through Entry / SL / TP lines.`;
   }
 
-function inferIntent(question: string): AIIntent {
-  const q = question.toLowerCase();
-
-  if (q.includes("long") || q.includes("short") || q.includes("buy") || q.includes("sell") || q.includes("entry")) {
-    return "trade";
-  }
-
-  if (q.includes("risk") || q.includes("sl") || q.includes("stop") || q.includes("leverage")) {
-    return "risk";
-  }
-
-  if (q.includes("trend") || q.includes("structure") || q.includes("liquidity") || q.includes("session")) {
-    return "market";
-  }
-
-  return "general";
-}
-  return "general";
-}
   async function sendAIMessage(text?: string) {
     const question = (text || aiInput).trim();
     if (!question || aiThinking) return;
@@ -2911,18 +2897,19 @@ function inferIntent(question: string): AIIntent {
     const markerPrice = plan.entry || signalPlan.markerPrice;
     const direction = plan.direction || signalPlan.direction;
     const quality = plan.quality || signalPlan.confidence;
-    const maturePhase = plan.phase === "EXECUTE" || plan.phase === "VALIDATED";
-    const scoreGate = plan.phase === "EXECUTE" ? PRECISION_RULES.minExecuteQuality : PRECISION_RULES.minWatchQuality;
-    const lastLiveBar = Number(lastCandleRef.current?.time || 0);
-    const closedSignalBar = Number(markerTime || 0) < lastLiveBar;
-    const shouldMark = Boolean(direction && markerTime && markerPrice && maturePhase && quality >= scoreGate && closedSignalBar && eliteSignalAllowed);
+    // Visible lifecycle: SCAN/SPAWNED = early marker, VALIDATED = watch marker, EXECUTE = confirmed marker.
+    // This keeps the system alive on chart while still hiding Entry/SL/TP values until EXECUTE or an open trade.
+    const signalLifecyclePhase =
+      plan.phase === "EXECUTE" || plan.phase === "VALIDATED" || plan.phase === "SPAWNED" || signalPlan.shouldMark;
+    const scoreGate = plan.phase === "EXECUTE" ? 72 : plan.phase === "VALIDATED" ? 58 : 45;
+    const shouldMark = Boolean(direction && markerTime && markerPrice && signalLifecyclePhase && quality >= scoreGate && plan.phase !== "FILTERED" && plan.phase !== "NO_TRADE");
 
     if (!shouldMark || !direction || !markerTime || !markerPrice) {
       visualSignalKeyRef.current = `${timeframe}-${plan.phase}-${signalPlan.state}`;
       return;
     }
 
-    const cooldownBars = timeframe === "1m" ? 10 : timeframe === "5m" ? 8 : 5;
+    const cooldownBars = plan.phase === "EXECUTE" ? (timeframe === "1m" ? 8 : timeframe === "5m" ? 6 : 4) : (timeframe === "1m" ? 4 : timeframe === "5m" ? 3 : 2);
     const tfSec = TF_SECONDS[timeframe] || 300;
     const nowBar = Number(markerTime);
     const prevSmart = smartSignalRef.current;
@@ -2933,7 +2920,7 @@ function inferIntent(question: string): AIIntent {
 
     if (sameDirection && inCooldown && !stronger) return;
 
-    const phaseLabel = plan.phase === "EXECUTE" ? "ENTER NOW" : plan.phase === "VALIDATED" ? "WAIT RETEST" : plan.phase === "FILTERED" ? "FILTERED" : signalPlan.state;
+    const phaseLabel = plan.phase === "EXECUTE" ? "ENTER NOW" : plan.phase === "VALIDATED" ? "WATCH" : plan.phase === "SPAWNED" ? "ARMING" : signalPlan.state;
     const stateForMarker: SignalState = direction === "LONG"
       ? plan.phase === "EXECUTE" ? "CONFIRMED LONG" : "WATCH LONG"
       : plan.phase === "EXECUTE" ? "CONFIRMED SHORT" : "WATCH SHORT";
@@ -3477,6 +3464,7 @@ function inferIntent(question: string): AIIntent {
         </div>
       </div>
     );
+  };
 
   const editorCurrentPrice = useMemo(() => {
     if (!lineEditor) return 0;
@@ -4406,7 +4394,7 @@ function inferIntent(question: string): AIIntent {
 
                   <div className="grid grid-cols-2 gap-2">
                     <label className="block">
-                      <span className="text-[11px] text-gray-500">Amount USDT</span>
+                      <span className="text-[11px] text-gray-500">Margin USDT</span>
                       <input
                         type="number"
                         value={draftUsd}
@@ -4429,9 +4417,9 @@ function inferIntent(question: string): AIIntent {
                 </div>
 
                 <div className="rounded-xl bg-black/60 border border-zinc-800 p-3 mb-3 text-xs space-y-2">
-                  <div className="flex justify-between"><span className="text-gray-500">Notional</span><span>{estimatedNotional.toFixed(2)} USDT</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Margin / Cost</span><span className="text-yellow-400">{estimatedMargin.toFixed(2)} USDT</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Effective Notional</span><span>{estimatedNotional.toFixed(2)} USDT</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">Base Size</span><span>{executionSize.toFixed(6)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-500">Required Margin</span><span className="text-yellow-400">{estimatedMargin.toFixed(4)} USDT</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">Mode</span><span>{marginMode === "isolated" ? "Isolated" : "Cross"}</span></div>
                 </div>
 
