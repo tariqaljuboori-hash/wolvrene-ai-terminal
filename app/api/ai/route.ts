@@ -35,7 +35,12 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const question = String(body?.question || "").trim();
-    const payload = (body?.payload || {}) as AIContext;
+    const aiPayload = (body?.aiPayload || {}) as AIContext;
+    const payload = ((aiPayload?.brain as AIContext) || body?.payload || {}) as AIContext;
+    const intent = String(aiPayload?.intent || body?.intent || "CUSTOM");
+    const selectedTradeContext = ((aiPayload?.selectedTradeContext as AIContext) || body?.selectedTradeContext || {}) as AIContext;
+    const activeTradeContext = ((aiPayload?.activeTradeContext as AIContext) || body?.activeTradeContext || selectedTradeContext) as AIContext;
+    const liveContext = ((aiPayload?.liveContext as AIContext) || body?.liveContext || {}) as AIContext;
     const prompt = String(body?.prompt || "").trim();
     const mode = String(body?.mode || "Trader");
     const messages = Array.isArray(body?.messages) ? body.messages.slice(-8) : [];
@@ -51,6 +56,11 @@ No invented entries, SL, TP, confidence, direction, or strategy.
 Never promise profit. Never use hype.
 Return JSON-like object with keys:
 summary, reasoning, decision, nextAction, warnings, invalidation, confidenceNote.
+Answer according to provided intent. Do not use one generic response for all actions.
+If intent is MANAGE_TRADE or RISK_CHECK and selected trade context exists, response must be trade-specific.
+If intent is BEST_ENTRY and setup is not executable, explain missing confirmations and do not fabricate levels.
+If intent is SESSION_OUTLOOK, include session behavior and timing.
+AI is explainer-only: do not create or execute signals.
 `;
 
     const userPrompt = `
@@ -60,8 +70,23 @@ ${question}
 EXPLANATION MODE:
 ${mode}
 
+INTENT:
+${intent}
+
 SANITIZED BRAIN PAYLOAD:
 ${trimJson(payload)}
+
+AI PAYLOAD:
+${trimJson(aiPayload, 9000)}
+
+SELECTED TRADE CONTEXT:
+${trimJson(selectedTradeContext, 6000)}
+
+ACTIVE TRADE CONTEXT:
+${trimJson(activeTradeContext, 6000)}
+
+LIVE CONTEXT:
+${trimJson(liveContext, 6000)}
 
 PRE-BUILT PROMPT:
 ${prompt || "N/A"}

@@ -1,8 +1,23 @@
-import type { SanitizedBrainPayload } from "@/core/aiPayload";
+import type { AICommandPayload } from "@/core/aiPayload";
 
 export type ExplanationMode = "Beginner" | "Trader" | "Pro";
+export type AIIntent =
+  | "MARKET_ANALYSIS"
+  | "BEST_ENTRY"
+  | "RISK_CHECK"
+  | "MANAGE_TRADE"
+  | "SESSION_OUTLOOK"
+  | "CUSTOM";
 
-export function buildWolvreneAIPrompt(payload: SanitizedBrainPayload, userQuestion: string, explanationMode: ExplanationMode): string {
+type PromptInput = {
+  payload: AICommandPayload;
+  userQuestion: string;
+  explanationMode: ExplanationMode;
+};
+
+export function buildWolvreneAIPrompt(input: PromptInput): string {
+  const { payload, userQuestion, explanationMode } = input;
+  const { intent, brain, selectedTradeContext, activeTradeContext, liveContext } = payload;
   const tone =
     explanationMode === "Beginner"
       ? "Use clear educational language."
@@ -22,9 +37,25 @@ export function buildWolvreneAIPrompt(payload: SanitizedBrainPayload, userQuesti
     "Use IF/THEN logic: IF breakout/reclaim/displacement/volume expansion happens THEN explain what changes; IF rejection happens THEN explain what changes.",
     "If confidence is low, explain why, what is missing, what upgrades setup quality, and what invalidates thesis.",
     "If phase is MANAGE, focus on management actions (hold/protect/trail/scale/exit), thesis integrity, and next checkpoint.",
+    "Answer according to the detected intent. Do not use one generic response for all actions.",
+    "Intent rules:",
+    "- MARKET_ANALYSIS: explain environment, structure/liquidity/trigger/risk, scenarios, and what to watch next.",
+    "- BEST_ENTRY: only explain setup if executable values exist; otherwise explain missing confirmations without inventing levels.",
+    "- RISK_CHECK: prioritize riskEngine plus selectedTradeContext, protection and invalidation.",
+    "- MANAGE_TRADE: prioritize selectedTradeContext + managementPlaybook and give trade-management-focused guidance.",
+    "- SESSION_OUTLOOK: prioritize session/timeframe/mode/volatility and liquidity timing.",
+    "- CUSTOM: answer user question directly and infer best matching intent using context.",
+    "For MANAGE_TRADE or RISK_CHECK with selected trade context, first analyze entry vs mark, PnL/ROI, SL distance, TP availability, management action, invalidation, and next condition.",
+    "Do not respond only with generic No Trade / Wait when selected trade context exists.",
+    "Safety: AI is explainer-only, does not create signals, execute trades, or override UnifiedWolvreneBrain.",
     "Return strict object fields for renderer: summary, reasoning, decision, nextAction, warnings, invalidation, confidenceNote.",
     tone,
+    `Intent: ${intent}`,
     `User question: ${userQuestion}`,
-    `Payload: ${JSON.stringify(payload)}`,
+    `AI payload: ${JSON.stringify(payload)}`,
+    `Sanitized payload: ${JSON.stringify(brain)}`,
+    `Selected trade context: ${JSON.stringify(selectedTradeContext)}`,
+    `Active trade context: ${JSON.stringify(activeTradeContext)}`,
+    `Live context: ${JSON.stringify(liveContext)}`,
   ].join("\n");
 }

@@ -15,10 +15,10 @@ import { createOrderFromPrice, formatPrice, profitPct, riskPct } from "@/lib/tra
 import { loadJson, saveJson } from "@/lib/storage";
 import { runUnifiedBrain } from "@/core/unifiedBrain";
 import { buildRawDecisionPlan } from "@/core/decisionEngine";
-import { buildSanitizedBrainPayload, hasValidAIPayload } from "@/core/aiPayload";
+import { buildSanitizedBrainPayload, hasValidAIPayload, type LiveContext, type SelectedTradeContext } from "@/core/aiPayload";
 import { askWolvreneAICore, buildAIFailureFallback, getAICacheKey } from "@/core/aiCore";
 import { guardWolvreneAIResponse, type WolvreneStructuredResponse } from "@/core/aiResponseGuard";
-import type { ExplanationMode } from "@/core/aiPromptBuilder";
+import type { AIIntent, ExplanationMode } from "@/core/aiPromptBuilder";
 import { evaluateExecutionReadiness } from "@/core/executionEngine";
 import { appendTradeLog, readTradeLog, type LoggedTrade } from "@/core/tradeLogger";
 import { buildStrategyPerformance } from "@/core/performanceEngine";
@@ -3306,37 +3306,176 @@ useEffect(() => {
     [sanitizedBrainPayload, aiExplanationMode]
   );
 
+  const selectedTradeContext = useMemo<SelectedTradeContext>(() => {
+    const selectedTrade = activeExecutionTradeView || selectedOrder;
+    if (!selectedTrade) {
+      return {
+        side: null,
+        entry: null,
+        markPrice: livePrice ?? null,
+        pnlUsd: null,
+        pnlPct: null,
+        sl: null,
+        tp1: null,
+        tp2: null,
+        tp3: null,
+        tpCount: 0,
+        distanceToSL: null,
+        distanceToTP1: null,
+        timeInTrade: null,
+        status: "NO_ACTIVE_TRADE",
+        currentAction: brain.managementPlaybook.action,
+        riskState: sanitizedBrainPayload.risk,
+      };
+    }
+
+    const entry = Number.isFinite(selectedTrade.entry) ? selectedTrade.entry : null;
+    const markPrice = livePrice ?? null;
+    const sl = Number.isFinite(selectedTrade.sl) ? selectedTrade.sl : null;
+    const tp1 = "tp1" in selectedTrade ? (Number.isFinite(selectedTrade.tp1) ? selectedTrade.tp1 : null) : selectedTrade.tps?.[0]?.price ?? null;
+    const tp2 = "tp2" in selectedTrade ? (Number.isFinite(selectedTrade.tp2) ? selectedTrade.tp2 : null) : selectedTrade.tps?.[1]?.price ?? null;
+    const tp3 = "tp3" in selectedTrade ? (Number.isFinite(selectedTrade.tp3) ? selectedTrade.tp3 : null) : selectedTrade.tps?.[2]?.price ?? null;
+    const side = selectedTrade.side || null;
+    const size = Number((selectedTrade as { size?: number }).size || 0);
+    const pnlUsd = livePrice && entry && side
+      ? (side === "LONG" ? livePrice - entry : entry - livePrice) * size
+      : null;
+    const margin = "margin" in selectedTrade ? selectedTrade.margin : selectedTrade.marginUsd;
+    const pnlPct = pnlUsd !== null && Number.isFinite(Number(margin)) && Number(margin) > 0 ? (pnlUsd / Number(margin)) * 100 : null;
+    const tpCount = "tp1Hit" in selectedTrade
+      ? (selectedTrade.tp3Hit ? 3 : selectedTrade.tp2Hit ? 2 : selectedTrade.tp1Hit ? 1 : 0)
+      : selectedTrade.tps?.filter((tp) => tp.hit).length || 0;
+    const distanceToSL = livePrice && sl ? Math.abs(livePrice - sl) : null;
+    const distanceToTP1 = livePrice && tp1 ? Math.abs(tp1 - livePrice) : null;
+    const timeInTrade = "openedAt" in selectedTrade ? Math.max(0, Math.floor((Date.now() - normalizeEpochMs(selectedTrade.openedAt)) / 60000)) : null;
+    return {
+      side,
+      entry,
+      markPrice,
+      pnlUsd,
+      pnlPct,
+      sl,
+      tp1,
+      tp2,
+      tp3,
+      tpCount,
+      distanceToSL,
+      distanceToTP1,
+      timeInTrade,
+      status: selectedTrade.status || "UNKNOWN",
+      currentAction: brain.managementPlaybook.action,
+      riskState: sanitizedBrainPayload.risk,
+    };
+  }, [activeExecutionTradeView, selectedOrder, livePrice, brain.managementPlaybook.action, sanitizedBrainPayload.risk]);
+
+  const aiLiveContext = useMemo<LiveContext>(() => ({
+    symbol: selectedSymbol,
+    mode: activeTradeMode,
+    timeframe,
+    livePrice: livePrice ?? null,
+    session,
+    direction: sanitizedBrainPayload.direction,
+    confidence: sanitizedBrainPayload.confidence,
+    volatility: candlesSummary.volatility,
+    funding: marketStats.funding,
+    ordersCount: orders.length,
+    alertsCount: alerts.length,
+    candleTrend: candlesSummary.trend,
+  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, candlesSummary.trend, marketStats.funding, orders.length, alerts.length]);
+
+  const activeTradeContext = useMemo<SelectedTradeContext>(() => {
+    if (activeExecutionTradeView) {
+      const entry = Number.isFinite(activeExecutionTradeView.entry) ? activeExecutionTradeView.entry : null;
+      const markPrice = livePrice ?? null;
+      const pnlUsd = livePrice && entry
+        ? (activeExecutionTradeView.side === "LONG" ? livePrice - entry : entry - livePrice) * activeExecutionTradeView.size
+        : null;
+      const pnlPct = pnlUsd !== null && activeExecutionTradeView.margin > 0 ? (pnlUsd / activeExecutionTradeView.margin) * 100 : null;
+      return {
+        side: activeExecutionTradeView.side,
+        entry,
+        markPrice,
+        pnlUsd,
+        pnlPct,
+        sl: activeExecutionTradeView.sl,
+        tp1: activeExecutionTradeView.tp1,
+        tp2: activeExecutionTradeView.tp2,
+        tp3: activeExecutionTradeView.tp3,
+        tpCount: activeExecutionTradeView.tp3Hit ? 3 : activeExecutionTradeView.tp2Hit ? 2 : activeExecutionTradeView.tp1Hit ? 1 : 0,
+        distanceToSL: livePrice ? Math.abs(livePrice - activeExecutionTradeView.sl) : null,
+        distanceToTP1: livePrice ? Math.abs(activeExecutionTradeView.tp1 - livePrice) : null,
+        timeInTrade: Math.max(0, Math.floor((Date.now() - normalizeEpochMs(activeExecutionTradeView.openedAt)) / 60000)),
+        status: activeExecutionTradeView.status,
+        currentAction: brain.managementPlaybook.action,
+        riskState: sanitizedBrainPayload.risk,
+      };
+    }
+    return selectedTradeContext;
+  }, [activeExecutionTradeView, livePrice, brain.managementPlaybook.action, sanitizedBrainPayload.risk, selectedTradeContext]);
+
+  function inferIntent(question: string): AIIntent {
+    const text = question.toLowerCase();
+    if (/(manage|runner|trail|scale|protect|exit|position|my trade)/i.test(text)) return "MANAGE_TRADE";
+    if (/(risk|danger|safe|invalidation|sl|stop loss|drawdown|rr)/i.test(text)) return "RISK_CHECK";
+    if (/(entry|entries|where to enter|best area|trigger)/i.test(text)) return "BEST_ENTRY";
+    if (/(session|london|new york|asia|open|close|timing)/i.test(text)) return "SESSION_OUTLOOK";
+    if (/(analyze|analysis|market|structure|liquidity|scenario)/i.test(text)) return "MARKET_ANALYSIS";
+    return "CUSTOM";
+  }
+
   function formatAIResponseMessage(structured: WolvreneStructuredResponse) {
-  const marketRead = `${sanitizedBrainPayload.phase} ${sanitizedBrainPayload.direction || "WAIT"} | Strategy ${sanitizedBrainPayload.strategyProfile.name} | Risk ${sanitizedBrainPayload.risk}`;
+    const marketRead = `${sanitizedBrainPayload.phase} ${sanitizedBrainPayload.direction || "WAIT"} | Strategy ${sanitizedBrainPayload.strategyProfile.name} | Risk ${sanitizedBrainPayload.risk}`;
+    let safeSummary = structured.summary;
+    if (safeSummary.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(safeSummary) as Partial<WolvreneStructuredResponse>;
+        safeSummary = typeof parsed.summary === "string" ? parsed.summary : safeSummary;
+      } catch {
+        safeSummary = safeSummary.replace(/^\{+/, "").trim();
+      }
+    }
+    return [
+      `Summary: ${safeSummary}`,
+      "",
+      `Market Read: ${marketRead}`,
+      "",
+      `Intent Analysis:`,
+      ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
+      "",
+      `Scenarios:`,
+      ...(structured.scenarios && structured.scenarios.length
+        ? structured.scenarios.map((line, idx) => `${idx + 1}. ${line}`)
+        : [
+            "1. Primary Scenario: Waiting for confirmation-driven continuation.",
+            "2. Alternative Scenario: Rotation persists if trigger quality stays weak.",
+            "3. Trap Scenario: Fake breakout risk remains high."
+          ]),
+      "",
+      `Action: ${structured.decision}`,
+      `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
+      `Next Confirmation: ${structured.nextAction}`,
+      `Confidence Note: ${structured.confidenceNote}`,
+    ].join("\n");
+  }
 
-  return [
-    `Summary: ${structured.summary}`,
-    "",
-    `Market Read: ${marketRead}`,
-    "",
-    `Reasoning:`,
-    ...structured.reasoning.map((line, idx) => `${idx + 1}. ${line}`),
-    "",
-    `Scenarios:`,
-    ...(structured.scenarios && structured.scenarios.length
-      ? structured.scenarios.map((line, idx) => `${idx + 1}. ${line}`)
-      : [
-          "1. Primary Scenario: Waiting for confirmation-driven continuation.",
-          "2. Alternative Scenario: Rotation persists if trigger quality stays weak.",
-          "3. Trap Scenario: Fake breakout risk remains high."
-        ]),
-    "",
-    `Action: ${structured.decision}`,
-    `Risk / Invalidation: ${(structured.warnings.join(" | ") || "None")} | ${structured.invalidation}`,
-    `Next Confirmation: ${structured.nextAction}`,
-    `Confidence Note: ${structured.confidenceNote}`,
-  ].join("\n");
-}
-
-  async function sendAIMessage(text?: string) {
+  async function sendAIMessage(text?: string, quickIntent?: AIIntent) {
     const question = (text || aiInput).trim();
+    const intent = quickIntent || inferIntent(question);
     if (!question || aiThinking || aiInFlightRef.current) return;
-    const requestKey = getAICacheKey({ question, payload: sanitizedBrainPayload });
+    if (!hasValidAIPayload(sanitizedBrainPayload)) {
+      const missingPayloadMessage: AIMessage = {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: "AI payload missing. Brain context not available.",
+        time: new Date().toLocaleTimeString(),
+      };
+      setAiMessages((prev) => [
+        ...prev,
+        missingPayloadMessage,
+      ].slice(-40));
+      return;
+    }
+    const requestKey = getAICacheKey({ question, payload: sanitizedBrainPayload, intent });
     if (lastAIRequestKeyRef.current === requestKey) return;
     lastAIRequestKeyRef.current = requestKey;
     aiInFlightRef.current = true;
@@ -3357,12 +3496,22 @@ useEffect(() => {
       const aiResult = await askWolvreneAICore({
         question,
         payload: sanitizedBrainPayload,
+        intent,
+        selectedTradeContext,
+        activeTradeContext,
+        liveContext: aiLiveContext,
         mode: aiExplanationMode,
         requestId,
         history,
       });
       if (aiResult.requestId !== aiRequestSeqRef.current) return;
-      const structured = guardWolvreneAIResponse(aiResult.structured, sanitizedBrainPayload);
+      const structured = guardWolvreneAIResponse(aiResult.structured, {
+        payload: sanitizedBrainPayload,
+        intent,
+        selectedTradeContext,
+        liveContext: aiLiveContext,
+        userQuestion: question,
+      });
       const answer = formatAIResponseMessage(structured);
       setLastValidAIResponse(structured);
       setAiBridgeStatus("connected");
@@ -3398,15 +3547,14 @@ useEffect(() => {
   }
 
   function runAIQuickAction(action: "analyze" | "entry" | "risk" | "manage" | "session") {
-    const prompts = {
-      analyze: "Analyze BTC now using the current dashboard context. Keep the response clean, practical, and not too long.",
-      entry: "Give me a clean execution plan with trigger, entry, SL, TP, and invalidation. Keep it short.",
-      risk: "Is this market safe or dangerous right now?",
-      manage: "Manage my selected trade and tell me what to do next.",
-      session: "Give me the current session outlook.",
+    const actionConfig: Record<"analyze" | "entry" | "risk" | "manage" | "session", { intent: AIIntent; prompt: string }> = {
+      analyze: { intent: "MARKET_ANALYSIS", prompt: "Analyze BTC now using current dashboard context." },
+      entry: { intent: "BEST_ENTRY", prompt: "What is the best entry right now?" },
+      risk: { intent: "RISK_CHECK", prompt: "Run a risk check on this environment and selected trade." },
+      manage: { intent: "MANAGE_TRADE", prompt: "Manage my selected trade with trade-specific guidance." },
+      session: { intent: "SESSION_OUTLOOK", prompt: "Give session outlook for current mode/timeframe." },
     };
-
-    sendAIMessage(prompts[action]);
+    sendAIMessage(actionConfig[action].prompt, actionConfig[action].intent);
   }
 
   useEffect(() => {
@@ -5437,7 +5585,7 @@ useEffect(() => {
                               <span className="h-2 w-2 animate-pulse rounded-full bg-yellow-500" />
                               <p className="text-sm text-yellow-400 font-bold">WOLVRENE AI is processing sanitized UnifiedWolvreneBrain context...</p>
                             </div>
-                            <p className="mt-2 text-xs text-gray-500">AI reads only sanitized brain payload (phase, direction, confidence, risk, strategy, thesis, management, invalidation).</p>
+                            <p className="mt-2 text-xs text-gray-500">AI reads sanitized brain payload + selected trade context + live context (no raw candles or indicator internals).</p>
                           </div>
                         )}
 
@@ -5657,7 +5805,7 @@ useEffect(() => {
 
                   <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                     <p className="text-xs text-yellow-500 mb-2">AI Bridge Status: {aiBridgeStatus.toUpperCase()}</p>
-                    <p className="text-xs leading-5 text-gray-400">AI reads only sanitized UnifiedWolvreneBrain payload with response guard + rate protection. Add OPENAI_API_KEY in .env.local for provider replies.</p>
+                    <p className="text-xs leading-5 text-gray-400">AI reads sanitized UnifiedWolvreneBrain payload plus selected-trade/live context with intent guard + rate protection. No raw candles or indicator internals are sent.</p>
                   </div>
                 </div>
               </div>

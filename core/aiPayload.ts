@@ -16,12 +16,16 @@ export type SanitizedBrainPayload = {
   entryReason: string;
   managementReason: string;
   invalidationReason: string;
+  nextConfirmation: string;
   institutionalContext: UnifiedBrainOutput["institutionalContext"];
   strategyProfile: UnifiedBrainOutput["strategyProfile"];
   tradeThesis: UnifiedBrainOutput["tradeThesis"];
   managementPlaybook: UnifiedBrainOutput["managementPlaybook"];
   riskEngine: UnifiedBrainOutput["riskEngine"];
   entryGrade: UnifiedBrainOutput["entryGrade"];
+  qualityScore: number;
+  qualityGrade: string;
+  confirmationCount: number;
   debug: {
     aiPayloadSanitized: true;
     aiContextSource: "UnifiedWolvreneBrain";
@@ -39,6 +43,48 @@ export type SanitizedBrainPayload = {
     blockedReason: string;
     institutionalBehavior: string;
   };
+};
+
+export type SelectedTradeContext = {
+  side: "LONG" | "SHORT" | null;
+  entry: number | null;
+  markPrice: number | null;
+  pnlUsd: number | null;
+  pnlPct: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  tp3: number | null;
+  tpCount: number;
+  distanceToSL: number | null;
+  distanceToTP1: number | null;
+  timeInTrade: number | null;
+  status: string;
+  currentAction: string;
+  riskState: string;
+};
+
+export type LiveContext = {
+  symbol: string;
+  mode: string;
+  timeframe: string;
+  livePrice: number | null;
+  session: string;
+  direction: string | null;
+  confidence: number;
+  volatility: string;
+  funding: string;
+  ordersCount: number;
+  alertsCount: number;
+  candleTrend: string;
+};
+
+export type AICommandPayload = {
+  intent: string;
+  brain: SanitizedBrainPayload;
+  selectedTradeContext: SelectedTradeContext;
+  activeTradeContext: SelectedTradeContext;
+  liveContext: LiveContext;
 };
 
 export function buildSanitizedBrainPayload(brain: UnifiedBrainOutput): SanitizedBrainPayload {
@@ -112,12 +158,16 @@ export function buildSanitizedBrainPayload(brain: UnifiedBrainOutput): Sanitized
     entryReason: brain.entryReason || "Entry is blocked until validation.",
     managementReason: brain.managementReason || "No active management action.",
     invalidationReason: brain.invalidationReason || "No invalidation available.",
+    nextConfirmation: safeTradeThesis.nextConfirmation || safeStrategyProfile.nextAction || "Wait for confirmation.",
     institutionalContext: safeInstitutionalContext,
     strategyProfile: safeStrategyProfile,
     tradeThesis: safeTradeThesis,
     managementPlaybook: safeManagementPlaybook,
     riskEngine: safeRiskEngine,
     entryGrade: brain.entryGrade || "Reject",
+    qualityScore: Number.isFinite(brain.qualityScore) ? brain.qualityScore : 0,
+    qualityGrade: brain.qualityGrade || "N/A",
+    confirmationCount: Number.isFinite(brain.confirmationCount) ? brain.confirmationCount : 0,
     debug: {
       aiPayloadSanitized: true,
       aiContextSource: "UnifiedWolvreneBrain",
