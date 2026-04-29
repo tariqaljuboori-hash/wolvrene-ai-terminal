@@ -2486,7 +2486,7 @@ const impulseBoost =
   const confidence = signalPlan.confidence;
   const executionPrice = Number(draftPrice) || livePrice || lastCandleRef.current?.close || 0;
   const executionUsd = Math.max(0, Number(draftUsd) || 0);
-  const executionLeverage = clampLeverage(draftLeverage);
+  const executionLeverage = clampLeverage(Number(draftLeverage));
   const executionSize = calcBaseSizeFromUsd(executionUsd, executionPrice);
   const estimatedNotional = executionUsd;
   const estimatedMargin = executionLeverage ? executionUsd / executionLeverage : 0;
@@ -2858,7 +2858,7 @@ useEffect(() => {
 
     const notionalUsd = Math.max(1, Number(draftUsd) || 0);
     const size = Math.max(0.000001, calcBaseSizeFromUsd(notionalUsd, price));
-    const leverage = clampLeverage(draftLeverage);
+    const leverage = clampLeverage(Number(draftLeverage));
     const marginUsd = leverage ? notionalUsd / leverage : notionalUsd;
 
     const order = {
@@ -2870,7 +2870,7 @@ useEffect(() => {
       marginMode,
     } as TradeOrder;
 
-    setOrders((prev) => [normalizeOrderFinancials(order, price), ...prev]);
+    setOrders((prev) => [normalizeOrderFinancials({ ...order, price }), ...prev]);
     setSelectedOrderId(order.id);
     addJournal(`${side} ${orderType.toUpperCase()} order created at ${formatPrice(price)} — ${notionalUsd.toFixed(2)} USDT / ${Number(size).toFixed(6)} base / ${leverage}x / ${marginMode.toUpperCase()}`);
     addStructuredJournal({ event: "ORDER_CREATED", side, entry: price, note: `${side} ${orderType.toUpperCase()} order created` });
@@ -2898,14 +2898,27 @@ useEffect(() => {
   }
 
   function orderPnL(order: TradeOrder) {
-    const mark = livePrice || order.entry;
-    return calcOrderPnLUsd(order, mark);
-  }
+  const mark = livePrice || order.entry;
 
-  function orderRoi(order: TradeOrder) {
-    const mark = livePrice || order.entry;
-    return calcOrderRoiPct(order, mark);
-  }
+  return calcOrderPnLUsd(
+    order.entry,
+    mark,
+    order.size,
+    order.side
+  );
+}
+
+function orderRoi(order: TradeOrder) {
+  const mark = livePrice || order.entry;
+
+  return calcOrderRoiPct(
+    order.entry,
+    mark,
+    order.size,
+    order.leverage,
+    order.side
+  );
+}
 
   function estimatedLiquidation(order: TradeOrder) {
     const leverage = Math.max(1, Number(order.leverage) || 1);
@@ -2915,7 +2928,7 @@ useEffect(() => {
 
 
   function positionMargin(order: TradeOrder) {
-    return calcOrderMarginUsd(order);
+    return calcOrderMarginUsd(order.size, order.entry, order.leverage);
   }
 
   function breakevenPrice(order: TradeOrder) {
@@ -2950,8 +2963,7 @@ useEffect(() => {
           return [];
         }
         const nextOrder = normalizeOrderFinancials(
-          { ...order, size: Number(nextSize.toFixed(6)) } as TradeOrder,
-          livePrice || order.entry
+          { ...order, size: Number(nextSize.toFixed(6)) } as TradeOrder
         );
         return [nextOrder];
       })
@@ -2966,7 +2978,7 @@ useEffect(() => {
       size: Number(order.size) || 0.01,
       leverage: Number(order.leverage) || 1,
     } as TradeOrder;
-    setOrders((prev) => [normalizeOrderFinancials(reversedOrder, price), ...prev.filter((item) => item.id !== order.id)]);
+    setOrders((prev) => [normalizeOrderFinancials(reversedOrder), ...prev.filter((item) => item.id !== order.id)]);
     setSelectedOrderId(reversedOrder.id);
     addJournal(`Reversed #${String(order.id).slice(-4)} into ${oppositeSide}`);
   }
@@ -3340,7 +3352,7 @@ useEffect(() => {
     const pnlUsd = livePrice && entry && side
       ? (side === "LONG" ? livePrice - entry : entry - livePrice) * size
       : null;
-    const margin = "margin" in selectedTrade ? selectedTrade.margin : selectedTrade.marginUsd;
+    const margin = "margin" in selectedTrade ? selectedTrade.margin : 0;
     const pnlPct = pnlUsd !== null && Number.isFinite(Number(margin)) && Number(margin) > 0 ? (pnlUsd / Number(margin)) * 100 : null;
     const tpCount = "tp1Hit" in selectedTrade
       ? (selectedTrade.tp3Hit ? 3 : selectedTrade.tp2Hit ? 2 : selectedTrade.tp1Hit ? 1 : 0)
