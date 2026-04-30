@@ -1720,8 +1720,8 @@ const impulseBoost =
     );
     const rows = decisionHistory
       .filter((item) => item.direction)
-      .map((item) => ({
-        id: item.id,
+      .map((item, index) => ({
+         id: `${item.id}-${index}`,
         time: new Date(item.createdAt).toLocaleTimeString(),
         symbol: item.symbol,
         timeframe: item.timeframe,
@@ -4343,7 +4343,7 @@ function orderRoi(order: TradeOrder) {
     >
       <div className={fullscreen ? "mx-auto w-full max-w-[1940px]" : "mx-auto w-full max-w-[1780px]"}>
         <div className={`${terminalPanel} mb-3 p-2.5 md:p-3`}>
-          <div className="grid gap-2 xl:grid-cols-[320px_repeat(6,minmax(0,1fr))_220px]">
+          <div className="grid gap-2 xl:grid-cols-[320px_repeat(5,minmax(0,1fr))_auto]">
             <div className="flex items-center gap-3 rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
               <img src="/wolvrene-logo.png" alt="Wolvrene Logo" className="h-11 w-11 object-contain" />
               <div>
@@ -4352,12 +4352,49 @@ function orderRoi(order: TradeOrder) {
               </div>
             </div>
 
-            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+            <div className="relative rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
               <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Market</p>
-              <p className="mt-1 text-sm font-bold text-[#ffc247]">{selectedSymbolLabel}</p>
+              <button
+                onClick={() => setAssetMenuOpen((open) => !open)}
+                className="flex items-center gap-2 mt-1 text-sm font-bold text-[#ffc247] transition hover:text-yellow-400"
+              >
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
+                  {selectedSymbolMeta.icon}
+                </span>
+                {selectedSymbolLabel}
+                <span className="text-[10px] text-gray-500">▼</span>
+              </button>
+              {assetMenuOpen && (
+                <div className="absolute left-0 z-50 mt-2 w-56 overflow-hidden rounded-2xl border border-zinc-800 bg-[#101014] p-2 shadow-[0_20px_60px_rgba(0,0,0,0.65)]">
+                  {TRADE_SYMBOLS.map((item) => (
+                    <button
+                      key={item.symbol}
+                      onClick={() => {
+                        setSelectedSymbol(item.symbol);
+                        setAssetMenuOpen(false);
+                      }}
+                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black transition ${
+                        selectedSymbol === item.symbol
+                          ? "bg-yellow-500/15 text-yellow-300"
+                          : "text-gray-400 hover:bg-yellow-500/10 hover:text-yellow-400"
+                      }`}
+                    >
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
+                        {item.icon}
+                      </span>
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Live Price</p>
+              <div className="flex justify-between items-start">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Live Price</p>
+                <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/20 animate-pulse">
+                  LIVE
+                </span>
+              </div>
               <p ref={priceTextRef} className="mt-1 text-sm font-bold text-[#00e676]">Loading...</p>
             </div>
             <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
@@ -4366,7 +4403,7 @@ function orderRoi(order: TradeOrder) {
             </div>
             <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
               <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">AI Mode</p>
-              <p className="mt-1 text-sm font-bold text-[#ff8a00]">{activeTradeMode}</p>
+              <p className="mt-1 text-sm font-bold text-[#ff8a00]">{unifiedRadarMode}</p>
             </div>
             <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
               <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">
@@ -4377,51 +4414,11 @@ function orderRoi(order: TradeOrder) {
                 <div className="h-full bg-gradient-to-r from-[#ff8a00] to-[#ffc247]" style={{ width: `${v25FinalBrain.confidence}%` }} />
               </div>
             </div>
-            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Local Time</p>
-              <p className="mt-1 text-sm font-bold text-[#ffc247]">{clock}</p>
-            </div>
 
             <div className="flex items-center justify-end gap-1.5">
               <div className="hidden rounded-xl border border-green-500/30 bg-green-500/10 px-3 py-2 text-right text-[10px] text-green-300 md:block">
                 <p className="font-black uppercase tracking-wide">VIP Access</p>
                 <button onClick={logoutAccess} className="text-gray-500 hover:text-red-300">Logout</button>
-              </div>
-              <div className="relative">
-                <button
-                  onClick={() => setAssetMenuOpen((open) => !open)}
-                  className="flex h-10 items-center gap-2 rounded-xl border border-zinc-800 bg-black/70 px-4 text-xs font-black text-yellow-400 transition hover:border-yellow-600"
-                >
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
-                    {selectedSymbolMeta.icon}
-                  </span>
-                  {selectedSymbolLabel}
-                  <span className="text-[10px] text-gray-500">▼</span>
-                </button>
-
-                {assetMenuOpen && (
-                  <div className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-2xl border border-zinc-800 bg-[#101014] p-2 shadow-[0_20px_60px_rgba(0,0,0,0.65)]">
-                    {TRADE_SYMBOLS.map((item) => (
-                      <button
-                        key={item.symbol}
-                        onClick={() => {
-                          setSelectedSymbol(item.symbol);
-                          setAssetMenuOpen(false);
-                        }}
-                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black transition ${
-                          selectedSymbol === item.symbol
-                            ? "bg-yellow-500/15 text-yellow-300"
-                            : "text-gray-400 hover:bg-yellow-500/10 hover:text-yellow-400"
-                        }`}
-                      >
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
-                          {item.icon}
-                        </span>
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
               <button
                 onClick={() => setSettingsOpen(true)}
@@ -4439,23 +4436,20 @@ function orderRoi(order: TradeOrder) {
           </div>
         </div>
 
-        
-      <div className="mb-3 rounded-2xl border border-[rgba(255,139,0,0.2)] bg-[#0b0f14]/90 p-2">
-        <div className="flex flex-wrap gap-2">
-          {(["dashboard", "analytics", "journal", "backtest", "pro"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setTerminalTab(tab)}
-              className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-[0.12em] transition ${
-                terminalTab === tab
-                  ? "bg-yellow-500 text-black"
-                  : "border border-zinc-800 bg-black/60 text-gray-400 hover:text-yellow-400"
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
+      <div className="mb-3 grid gap-2 flex-wrap md:grid-cols-6">
+        {[
+          ["24H High", `$${marketStats.high}`],
+          ["24H Low", `$${marketStats.low}`],
+          ["24H Volume", marketStats.volume],
+          ["24H Change", marketStats.change],
+          ["Funding", marketStats.funding],
+          ["Funding ETA", sessionCountdown],
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">{label}</p>
+            <p className="mt-1 text-sm font-bold">{value}</p>
+          </div>
+        ))}
       </div>
 
       
@@ -4623,10 +4617,20 @@ function orderRoi(order: TradeOrder) {
                   <span className="leading-tight">{item.label}</span>
                 </button>
               ))}
-              <div className="mt-auto w-full rounded-xl border border-[#2a1f14] bg-black/40 p-2 text-center">
-                <p className="text-[9px] uppercase tracking-[0.12em] text-[#8b9098]">WOLVRENE</p>
-                <p className="text-[9px] uppercase tracking-[0.12em] text-[#8b9098]">AI CORE</p>
-                <p className="text-[10px] font-black text-[#00e676]">ONLINE</p>
+              <div className="mt-auto w-full">
+                <div className="relative h-20 overflow-hidden rounded-xl border border-[#2a1f14]">
+                  <img 
+                    src="/wolvrene-console-wolf.png" 
+                    alt="Wolvrene Wolf" 
+                    className="absolute inset-0 h-full w-full object-cover opacity-60"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
+                </div>
+                <div className="mt-1 rounded-xl border border-[#2a1f14] bg-black/40 p-2 text-center">
+                  <p className="text-[9px] uppercase tracking-[0.12em] text-[#8b9098]">WOLVRENE</p>
+                  <p className="text-[9px] uppercase tracking-[0.12em] text-[#8b9098]">AI CORE</p>
+                  <p className="text-[10px] font-black text-[#00e676]">ONLINE</p>
+                </div>
               </div>
             </aside>
           )}
@@ -4653,9 +4657,9 @@ function orderRoi(order: TradeOrder) {
               </div>
               <div className="max-h-[770px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
                 {signalFeedRows.length === 0 && <p className="text-xs text-[#8b9098]">No subscribed signal rows yet.</p>}
-                {signalFeedRows.map((row) => (
+                {signalFeedRows.map((row, index) => (
                   <button
-                    key={row.id}
+                    key={`${row.id}-${index}`}
                     onClick={() => {
                       setSelectedSignalId(row.id);
                       setTimeframe(row.timeframe);
@@ -4681,40 +4685,6 @@ function orderRoi(order: TradeOrder) {
           <div className="min-w-0">
             {!hideUI && (
               <>
-                <div className="grid md:grid-cols-3 gap-4 mb-4">
-                  <div className={`${card} p-5`}>
-                    <div className="flex justify-between items-start">
-                      <h2 className="text-sm text-gray-400 font-semibold">{selectedSymbolLabel} Tick Price</h2>
-                      <span className="text-[10px] px-2 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20 animate-pulse">
-                        LIVE
-                      </span>
-                    </div>
-                    <p ref={priceTextRef} className="text-3xl font-black mt-2">
-                      Loading...
-                    </p>
-                    <p className="text-xs text-gray-600 mt-2">Bitget WebSocket USDT-FUTURES</p>
-                    <p className="text-[11px] mt-2 text-gray-500">
-                      Status: <span ref={statusTextRef} className="text-green-400">CONNECTING</span>
-                    </p>
-                  </div>
-
-                  <div className={`${card} p-5`}>
-                    <h2 className="text-sm text-gray-400 font-semibold">Market Session</h2>
-                    <p className="text-2xl font-black mt-2" style={{ color: gold }}>
-                      {session}
-                    </p>
-                    <p className="text-xs text-gray-600 mt-2">Next phase: {sessionCountdown}</p>
-                    <p className="text-xs text-gray-500 mt-1">Heartbeat: {lastEngineHeartbeat}</p>
-                  </div>
-
-                  <div className={`${card} p-5`}>
-                    <h2 className="text-sm text-gray-400 font-semibold">Wolf Radar</h2>
-                    <p className="text-3xl font-black text-yellow-500 mt-2">{unifiedRadarMode}</p>
-                    <p className="text-xs text-gray-600 mt-2">Brain Bias: {v25FinalBrain.displayBias || bias}</p>
-                    <p className="text-xs text-gray-500 mt-1">Mode: {activeTradeMode} ({tradeModeSelection})</p>
-                  </div>
-                </div>
-
                 <div className="grid md:grid-cols-3 gap-3 mb-4">
                   <div className={`${card} p-4`}>
                     <div className="flex items-center justify-between">
@@ -5303,8 +5273,8 @@ function orderRoi(order: TradeOrder) {
                 <div className={`${terminalPanel} p-4`}>
                   <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Trade Timeline</p>
                   <div className="mt-2 space-y-1 text-[11px] text-[#8b9098]">
-                    {signalFeedRows.slice(0, 4).map((row) => (
-                      <p key={`timeline-${row.id}`}>{row.time} · {row.status}</p>
+                    {signalFeedRows.slice(0, 4).map((row, index) => (
+                      <p key={`timeline-${row.id}-${index}`}>{row.time} · {row.status}</p>
                     ))}
                     {signalFeedRows.length === 0 && <p>No recent timeline events.</p>}
                   </div>
