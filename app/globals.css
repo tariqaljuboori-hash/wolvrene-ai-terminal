@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #030405;
+  --foreground: #f4f4f5;
 }
 
 @theme inline {
@@ -23,4 +23,29 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 139, 0, 0.4) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 139, 0, 0.35);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+button,
+select,
+input {
+  accent-color: #ff8a00;
 }

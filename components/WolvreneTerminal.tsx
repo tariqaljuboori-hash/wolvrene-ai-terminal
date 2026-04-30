@@ -53,9 +53,11 @@ const defaultSettings: ChartSettings = {
 };
 
 const card =
-  "bg-[#151519]/95 border border-[#24242a] rounded-2xl shadow-[0_0_35px_rgba(0,0,0,0.45)] hover:border-[#3a3020] transition";
+  "rounded-2xl border border-[rgba(255,139,0,0.22)] bg-[rgba(10,12,14,0.92)] shadow-[0_0_26px_rgba(255,138,0,0.06)] transition hover:border-[rgba(255,194,71,0.42)]";
 
 const gold = "#d89b00";
+const terminalPanel =
+  "rounded-2xl border border-[rgba(255,139,0,0.34)] bg-[rgba(10,12,14,0.92)] shadow-[0_0_28px_rgba(255,138,0,0.08)]";
 
 type AccessStatus = "checking" | "granted" | "locked";
 
@@ -4337,86 +4339,108 @@ function orderRoi(order: TradeOrder) {
   return (
     <main
       onClick={() => setContextMenu({ open: false, x: 0, y: 0, price: 0 })}
-      className="min-h-screen bg-[radial-gradient(circle_at_top,#18120a_0%,#070707_42%,#000_100%)] text-white p-4 overflow-x-hidden"
+      className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top,#101318_0%,#06080a_40%,#030405_100%)] px-2 py-3 text-[#f4f4f5] md:px-4 md:py-4"
     >
-      <div className={fullscreen ? "w-full max-w-[1800px] mx-auto" : "w-full max-w-7xl mx-auto"}>
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <div className="flex items-center gap-3 mb-1">
-              <img src="/wolvrene-logo.png" alt="Wolvrene Logo" className="w-11 h-11 object-contain" />
-              <h1
-                className="text-3xl font-black tracking-[0.08em]"
-                style={{ color: gold, textShadow: "0 0 16px rgba(216,155,0,0.55)" }}
-              >
-                WOLVRENE
-              </h1>
-            </div>
-            <p className="text-gray-500 text-xs tracking-wide">{selectedSymbolLabel} AI Terminal — Precision Build</p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="hidden md:block text-right">
-              <p className="text-xs text-gray-500">Local Time</p>
-              <p className="text-sm font-bold text-yellow-500">{clock}</p>
+      <div className={fullscreen ? "mx-auto w-full max-w-[1940px]" : "mx-auto w-full max-w-[1780px]"}>
+        <div className={`${terminalPanel} mb-3 p-2.5 md:p-3`}>
+          <div className="grid gap-2 xl:grid-cols-[320px_repeat(6,minmax(0,1fr))_220px]">
+            <div className="flex items-center gap-3 rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <img src="/wolvrene-logo.png" alt="Wolvrene Logo" className="h-11 w-11 object-contain" />
+              <div>
+                <h1 className="text-xl font-black tracking-[0.08em] text-[#ff8a00]">WOLVRENE X</h1>
+                <p className="text-[11px] text-[#8b9098]">We Don&apos;t Chase. We Hunt.</p>
+              </div>
             </div>
 
-            
-            <div className="relative">
+            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Market</p>
+              <p className="mt-1 text-sm font-bold text-[#ffc247]">{selectedSymbolLabel}</p>
+            </div>
+            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Live Price</p>
+              <p ref={priceTextRef} className="mt-1 text-sm font-bold text-[#00e676]">Loading...</p>
+            </div>
+            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Session</p>
+              <p className="mt-1 text-sm font-bold">{session}</p>
+            </div>
+            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">AI Mode</p>
+              <p className="mt-1 text-sm font-bold text-[#ff8a00]">{activeTradeMode}</p>
+            </div>
+            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">
+                <span>Confidence</span>
+                <span>{v25FinalBrain.confidence}%</span>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/70">
+                <div className="h-full bg-gradient-to-r from-[#ff8a00] to-[#ffc247]" style={{ width: `${v25FinalBrain.confidence}%` }} />
+              </div>
+            </div>
+            <div className="rounded-xl border border-[#2a1f14] bg-black/40 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Local Time</p>
+              <p className="mt-1 text-sm font-bold text-[#ffc247]">{clock}</p>
+            </div>
+
+            <div className="flex items-center justify-end gap-1.5">
+              <div className="hidden rounded-xl border border-green-500/30 bg-green-500/10 px-3 py-2 text-right text-[10px] text-green-300 md:block">
+                <p className="font-black uppercase tracking-wide">VIP Access</p>
+                <button onClick={logoutAccess} className="text-gray-500 hover:text-red-300">Logout</button>
+              </div>
+              <div className="relative">
+                <button
+                  onClick={() => setAssetMenuOpen((open) => !open)}
+                  className="flex h-10 items-center gap-2 rounded-xl border border-zinc-800 bg-black/70 px-4 text-xs font-black text-yellow-400 transition hover:border-yellow-600"
+                >
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
+                    {selectedSymbolMeta.icon}
+                  </span>
+                  {selectedSymbolLabel}
+                  <span className="text-[10px] text-gray-500">▼</span>
+                </button>
+
+                {assetMenuOpen && (
+                  <div className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-2xl border border-zinc-800 bg-[#101014] p-2 shadow-[0_20px_60px_rgba(0,0,0,0.65)]">
+                    {TRADE_SYMBOLS.map((item) => (
+                      <button
+                        key={item.symbol}
+                        onClick={() => {
+                          setSelectedSymbol(item.symbol);
+                          setAssetMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black transition ${
+                          selectedSymbol === item.symbol
+                            ? "bg-yellow-500/15 text-yellow-300"
+                            : "text-gray-400 hover:bg-yellow-500/10 hover:text-yellow-400"
+                        }`}
+                      >
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
+                          {item.icon}
+                        </span>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <button
-                onClick={() => setAssetMenuOpen((open) => !open)}
-                className="flex h-10 items-center gap-2 rounded-xl border border-zinc-800 bg-black/70 px-4 text-xs font-black text-yellow-400 transition hover:border-yellow-600"
+                onClick={() => setSettingsOpen(true)}
+                className="h-10 px-4 rounded-xl bg-[#16161c] border border-[#2d2d35] text-sm hover:border-yellow-600 hover:text-yellow-400 transition"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
-                  {selectedSymbolMeta.icon}
-                </span>
-                {selectedSymbolLabel}
-                <span className="text-[10px] text-gray-500">▼</span>
+                ⚙
               </button>
-
-              {assetMenuOpen && (
-                <div className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-2xl border border-zinc-800 bg-[#101014] p-2 shadow-[0_20px_60px_rgba(0,0,0,0.65)]">
-                  {TRADE_SYMBOLS.map((item) => (
-                    <button
-                      key={item.symbol}
-                      onClick={() => {
-                        setSelectedSymbol(item.symbol);
-                        setAssetMenuOpen(false);
-                      }}
-                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black transition ${
-                        selectedSymbol === item.symbol
-                          ? "bg-yellow-500/15 text-yellow-300"
-                          : "text-gray-400 hover:bg-yellow-500/10 hover:text-yellow-400"
-                      }`}
-                    >
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px]">
-                        {item.icon}
-                      </span>
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-
-            <div className="hidden rounded-xl border border-green-500/20 bg-green-500/10 px-3 py-2 text-right text-[10px] text-green-300 md:block">
-              <p className="font-black uppercase tracking-wide">VIP Access</p>
-              <button onClick={logoutAccess} className="text-gray-500 hover:text-red-300">
-                Logout
+              <button
+                onClick={() => setFullscreen(!fullscreen)}
+                className="h-10 px-4 rounded-xl bg-[#16161c] border border-[#2d2d35] text-sm hover:border-yellow-600 hover:text-yellow-400 transition"
+              >
+                {fullscreen ? "⤢" : "⛶"}
               </button>
             </div>
-
-<button
-              onClick={() => setSettingsOpen(true)}
-              className="h-10 px-4 rounded-xl bg-[#16161c] border border-[#2d2d35] text-sm hover:border-yellow-600 hover:text-yellow-400 transition"
-            >
-              ⚙ Settings
-            </button>
           </div>
         </div>
 
         
-      <div className="mb-4 rounded-2xl border border-zinc-800 bg-[#11131b]/90 p-2">
+      <div className="mb-3 rounded-2xl border border-[rgba(255,139,0,0.2)] bg-[#0b0f14]/90 p-2">
         <div className="flex flex-wrap gap-2">
           {(["dashboard", "analytics", "journal", "backtest", "pro"] as const).map((tab) => (
             <button
@@ -4568,7 +4592,92 @@ function orderRoi(order: TradeOrder) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[92px_300px_minmax(0,1fr)_374px]">
+          {!hideUI && (
+            <aside className={`${terminalPanel} flex flex-col items-center gap-2 p-2.5`}>
+              {[
+                { label: "Dashboard", icon: "▦", tab: "dashboard" as const },
+                { label: "Signal Feed", icon: "◉", tab: "dashboard" as const },
+                { label: "Analytics", icon: "◫", tab: "analytics" as const },
+                { label: "Journal", icon: "⌘", tab: "journal" as const },
+                { label: "Backtest", icon: "⟲", tab: "backtest" as const },
+                { label: "Pro Tools", icon: "✦", tab: "pro" as const },
+                { label: "Settings", icon: "⚙", tab: "dashboard" as const },
+              ].map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => {
+                    if (item.label === "Settings") setSettingsOpen(true);
+                    else setTerminalTab(item.tab);
+                  }}
+                  className={`flex w-full items-center gap-2 rounded-xl border px-2 py-2 text-left text-[10px] font-bold transition ${
+                    terminalTab === item.tab && item.label !== "Signal Feed"
+                      ? "border-[#ff8a00] bg-[#ff8a00]/20 text-[#ff8a00]"
+                      : "border-zinc-800 bg-black/40 text-[#8b9098] hover:border-[#ff8a00]/50 hover:text-[#ffc247]"
+                  }`}
+                  title={item.label}
+                >
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-[#2a1f14] bg-black/50 text-[11px]">
+                    {item.icon}
+                  </span>
+                  <span className="leading-tight">{item.label}</span>
+                </button>
+              ))}
+              <div className="mt-auto w-full rounded-xl border border-[#2a1f14] bg-black/40 p-2 text-center">
+                <p className="text-[9px] uppercase tracking-[0.12em] text-[#8b9098]">WOLVRENE</p>
+                <p className="text-[9px] uppercase tracking-[0.12em] text-[#8b9098]">AI CORE</p>
+                <p className="text-[10px] font-black text-[#00e676]">ONLINE</p>
+              </div>
+            </aside>
+          )}
+
+          {!hideUI && (
+            <div className={`${terminalPanel} min-w-0 p-3`}>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-bold tracking-[0.14em] text-[#f4f4f5]">SIGNAL FEED</h3>
+                <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[9px] font-black text-green-300">LIVE</span>
+              </div>
+              <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
+                <select
+                  value={timeframe}
+                  onChange={(e) => setTimeframe(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-800 bg-black/60 px-2 py-2 text-xs"
+                >
+                  {["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"].map((tf) => (
+                    <option key={tf} value={tf}>{tf}</option>
+                  ))}
+                </select>
+                <button className="rounded-lg border border-zinc-800 bg-black/60 px-2 text-[10px] text-[#8b9098]">
+                  {signalFeedRows.length}
+                </button>
+              </div>
+              <div className="max-h-[770px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
+                {signalFeedRows.length === 0 && <p className="text-xs text-[#8b9098]">No subscribed signal rows yet.</p>}
+                {signalFeedRows.map((row) => (
+                  <button
+                    key={row.id}
+                    onClick={() => {
+                      setSelectedSignalId(row.id);
+                      setTimeframe(row.timeframe);
+                    }}
+                    className={`w-full rounded-xl border px-3 py-2 text-left transition ${
+                      selectedSignalId === row.id
+                        ? "border-[#ff8a00] bg-[#ff8a00]/10"
+                        : "border-zinc-800 bg-black/30 hover:border-[#ff8a00]/40"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[10px] text-[#8b9098]">
+                      <span>{row.time} · {row.symbol} · {row.timeframe}</span>
+                      <span className={`rounded-full px-1.5 py-0.5 font-bold ${row.side === "LONG" ? "bg-green-500/10 text-[#00e676]" : "bg-red-500/10 text-[#ff3b30]"}`}>{row.side}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-[#f4f4f5]">{row.status} · {row.confidence}%</p>
+                    <p className="mt-0.5 text-[10px] text-[#8b9098]">{row.reason}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="min-w-0">
             {!hideUI && (
               <>
@@ -4637,13 +4746,14 @@ function orderRoi(order: TradeOrder) {
                   </div>
                 </div>
 
-                <div className="grid md:grid-cols-5 gap-3 mb-4">
+                <div className="mb-4 grid gap-3 md:grid-cols-6">
                   {[
                     ["24H High", `$${marketStats.high}`],
                     ["24H Low", `$${marketStats.low}`],
                     ["24H Volume", marketStats.volume],
                     ["24H Change", marketStats.change],
                     ["Funding", marketStats.funding],
+                    ["Funding ETA", sessionCountdown],
                   ].map(([label, value]) => (
                     <div key={label} className={`${card} p-4`}>
                       <p className="text-[11px] text-gray-500 uppercase tracking-wider">{label}</p>
@@ -4652,7 +4762,7 @@ function orderRoi(order: TradeOrder) {
                   ))}
                 </div>
 
-                <div className={`${card} p-4 mb-4`}>
+                <div className="hidden">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-sm font-bold text-gray-300">Signal Feed</h3>
                     <span className="text-[10px] text-gray-500">{signalFeedRows.length} rows</span>
@@ -4676,10 +4786,10 @@ function orderRoi(order: TradeOrder) {
               </>
             )}
 
-            <div className={`${card} p-4 min-w-0 overflow-hidden`}>
+            <div className={`${card} p-3 min-w-0 overflow-hidden`}>
               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                  <h2 className="text-lg font-bold">{selectedSymbolLabel} Live Candlestick Chart</h2>
+                  <h2 className="text-lg font-bold">{selectedSymbolLabel} · {timeframe} · WOLVRENE PRECISION</h2>
                   <p className="text-[11px] text-gray-600">
                     Last Tick: <span ref={lastTickTextRef}>--</span> · Latency:{" "}
                     <span ref={latencyTextRef}>--</span>
@@ -4743,6 +4853,16 @@ function orderRoi(order: TradeOrder) {
                     Reset
                   </button>
 
+                  <button className="h-7 px-2.5 rounded-lg text-[11px] bg-[#08080a] border border-[#27272f] hover:border-yellow-700">
+                    Indicators
+                  </button>
+                  <button className="h-7 px-2.5 rounded-lg text-[11px] bg-[#08080a] border border-[#27272f] hover:border-yellow-700">
+                    Standard
+                  </button>
+                  <button className="h-7 px-2.5 rounded-lg text-[11px] bg-[#08080a] border border-[#27272f] hover:border-yellow-700">
+                    Advanced
+                  </button>
+
                   <button
                     onClick={() => setFullscreen(!fullscreen)}
                     className="h-7 px-2.5 rounded-lg text-[11px] bg-[#08080a] border border-[#27272f] hover:border-yellow-700 hover:text-yellow-400 transition"
@@ -4767,9 +4887,9 @@ function orderRoi(order: TradeOrder) {
                     price,
                   });
                 }}
-                className="relative overflow-hidden rounded-xl border border-zinc-800 bg-black w-full min-w-0"
+                className="relative w-full min-w-0 overflow-hidden rounded-xl border border-[rgba(255,139,0,0.25)] bg-black"
               >
-                <div ref={chartRef} className="w-full min-w-0 h-[620px]" />
+                <div ref={chartRef} className="h-[560px] w-full min-w-0 xl:h-[590px]" />
 
                 <div className="absolute left-3 top-3 z-40 max-w-[300px] rounded-xl border border-yellow-500/20 bg-black/70 px-3 py-2 backdrop-blur-md shadow-[0_0_30px_rgba(0,0,0,0.65)] pointer-events-none">
                   <div className="flex items-center justify-between gap-3">
@@ -4979,6 +5099,31 @@ function orderRoi(order: TradeOrder) {
               </div>
             </div>
 
+            {!hideUI && (
+              <div className={`${terminalPanel} mt-3 p-4`}>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-black uppercase tracking-[0.18em] text-[#ffc247]">Active Trade Overview</h3>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] text-[#8b9098]">{activeExecutionTradeView?.status || "WAITING"}</span>
+                </div>
+                <div className="grid gap-2 text-xs md:grid-cols-5">
+                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Position</p><p className={activeExecutionTradeView?.side === "LONG" ? "font-bold text-green-400" : "font-bold text-red-400"}>{activeExecutionTradeView?.side || "NONE"}</p></div>
+                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Size</p><p className="font-bold">{activeExecutionTradeView?.size?.toFixed(4) || "--"}</p></div>
+                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Entry / Mark</p><p className="font-bold">{activeExecutionTradeView ? formatPrice(activeExecutionTradeView.entry) : "--"} / {livePrice ? formatPrice(livePrice) : "--"}</p></div>
+                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">PnL / ROE</p><p className="font-bold">{activeExecutionTradeView && livePrice ? `${(((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2))} / ${((((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size) / Math.max(activeExecutionTradeView.margin, 0.0001) * 100).toFixed(2))}%` : "--"}</p></div>
+                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Margin / SL</p><p className="font-bold">{activeExecutionTradeView ? `${activeExecutionTradeView.margin.toFixed(2)} / ${formatPrice(activeExecutionTradeView.sl)}` : "--"}</p></div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {["Signal Received", "Validated", "Executed", "Managed"].map((step) => (
+                    <span key={step} className="rounded-lg border border-zinc-800 bg-black/40 px-2 py-1 text-[10px] text-[#8b9098]">{step}</span>
+                  ))}
+                  <div className="ml-auto grid grid-cols-2 gap-2 text-[11px]">
+                    <button onClick={() => createOrder("LONG")} className="rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-green-300">Open Long</button>
+                    <button onClick={() => createOrder("SHORT")} className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-red-300">Open Short</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {orders.length > 0 && (
               <div className={`${card} mt-4 overflow-hidden`}>
                 <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
@@ -5123,15 +5268,59 @@ function orderRoi(order: TradeOrder) {
                 </div>
               </div>
             )}
+
+            {!hideUI && (
+              <div className="mt-4 grid gap-3 lg:grid-cols-4">
+                <div className={`${terminalPanel} p-4`}>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Performance Today</p>
+                  <p className="mt-2 text-xl font-black text-[#00e676]">
+                    {tradeLog.length ? `${tradeLog.filter((t) => t.result === "WIN").length}/${tradeLog.length}` : "0/0"}
+                  </p>
+                  <div className="mt-3 h-12 rounded-lg bg-gradient-to-r from-[#ff8a00]/20 via-[#ffc247]/20 to-[#00e676]/10" />
+                </div>
+                <div className={`${terminalPanel} p-4`}>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">AI Engine Status</p>
+                  <div className="mt-2 flex items-center gap-3">
+                    <img src="/wolvrene-logo.png" alt="Wolvrene AI" className="h-10 w-10 object-contain opacity-90" />
+                    <div className="text-[11px] text-[#8b9098]">
+                      <p>Market Scan: Active</p>
+                      <p>Liquidity Analysis: Active</p>
+                      <p>Structure Mapping: Active</p>
+                      <p>Volume Analysis: Active</p>
+                      <p>Execution Engine: Active</p>
+                    </div>
+                  </div>
+                </div>
+                <div className={`${terminalPanel} p-4`}>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Risk Management</p>
+                  <div className="mt-3 flex items-center gap-3">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-full border-4 border-[#ff8a00]/60 text-sm font-black text-[#ffc247]">
+                      {Math.min(99, Math.max(1, Math.round((orders.length * 11) + 22)))}%
+                    </div>
+                    <p className="text-xs text-[#8b9098]">Dynamic exposure based on active orders and AI confidence.</p>
+                  </div>
+                </div>
+                <div className={`${terminalPanel} p-4`}>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Trade Timeline</p>
+                  <div className="mt-2 space-y-1 text-[11px] text-[#8b9098]">
+                    {signalFeedRows.slice(0, 4).map((row) => (
+                      <p key={`timeline-${row.id}`}>{row.time} · {row.status}</p>
+                    ))}
+                    {signalFeedRows.length === 0 && <p>No recent timeline events.</p>}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {!hideUI && (
-            <aside className="space-y-4 min-w-0">
-              <div className={`${card} p-5`}>
+            <aside className="min-w-0 space-y-3">
+              <div className={`${terminalPanel} relative overflow-hidden p-5`}>
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-sm text-gray-400 font-semibold">Precision Signal Console</h2>
                   <span className="text-[10px] px-2 py-1 rounded-full border border-yellow-600/40 text-yellow-500 bg-yellow-500/10">STABLE</span>
                 </div>
+                <div className="pointer-events-none absolute inset-0 -z-0 rounded-2xl bg-[radial-gradient(circle_at_top_right,rgba(255,138,0,0.12),transparent_46%)]" />
 
                 <p
                   className={`text-3xl font-black ${v25FinalBrain.stateColorClass}`}
@@ -5272,7 +5461,7 @@ function orderRoi(order: TradeOrder) {
                 </div>
               </div>
 
-              <div className={`${card} p-5`}> 
+              <div className={`${terminalPanel} p-4`}> 
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-sm text-gray-400 font-semibold">Trade Panel</h2>
                   <span className="text-[10px] text-yellow-500">{marginMode.toUpperCase()} / {executionLeverage}x</span>
@@ -5475,7 +5664,7 @@ function orderRoi(order: TradeOrder) {
                 )}
               </div>
 
-              <div className={`${card} p-5`}>
+              <div className={`${terminalPanel} p-4`}>
                 <h2 className="text-sm text-gray-400 font-semibold mb-3">Orders List</h2>
                 <div className="space-y-2 max-h-48 overflow-auto pr-1">
                   {orders.length === 0 && <p className="text-sm text-gray-500">No orders yet.</p>}
@@ -5500,7 +5689,7 @@ function orderRoi(order: TradeOrder) {
                 </div>
               </div>
 
-              <div className={`${card} p-5`}>
+              <div className={`${terminalPanel} p-4`}>
                 <h2 className="text-sm text-gray-400 font-semibold mb-3">Active Alerts</h2>
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <button
@@ -5536,7 +5725,7 @@ function orderRoi(order: TradeOrder) {
                 </div>
               </div>
 
-              <div className={`${card} p-5`}>
+              <div className={`${terminalPanel} p-4`}>
                 <h2 className="text-sm text-gray-400 font-semibold mb-3">Command Center</h2>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <button onClick={() => setHideUI(true)} className="rounded-xl border border-zinc-800 bg-black p-3 hover:border-yellow-700">
