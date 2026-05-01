@@ -1,5 +1,7 @@
 export type TradeSide = "LONG" | "SHORT";
 
+type NormalizableOrder = Record<string, unknown>;
+
 export function clampLeverage(
   value: number,
   min = 1,
@@ -63,9 +65,7 @@ export function calcOrderRoiPct(
   return (pnl / margin) * 100;
 }
 
-export function normalizeOrderFinancials<
-  T extends Record<string, any>
->(
+export function normalizeOrderFinancials<T extends NormalizableOrder>(
   order: T
 ): T & {
   leverage: number;

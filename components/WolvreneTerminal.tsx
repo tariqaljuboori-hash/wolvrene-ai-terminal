@@ -1559,6 +1559,17 @@ const impulseBoost =
   );
 
   useEffect(() => {
+    // Debug: log live candle updates
+    console.debug("[Wolvrene] Live candle update", {
+      symbol: selectedSymbol,
+      timeframe,
+      livePrice,
+      candleTime: lastCandleRef.current?.time,
+      recentCandlesCount: recentCandles.length,
+    });
+  }, [livePrice, lastCandleRef.current?.time]);
+
+  useEffect(() => {
     setActiveDecision((prev) => {
       const now = Date.now();
       const expired = Boolean(prev?.expiresAt && now > prev.expiresAt);
@@ -1572,6 +1583,7 @@ const impulseBoost =
       if (rawDecisionPlan.phase === "FILTERED" || invalidated || expired) {
         const cancelled: DecisionPlan = { ...(prev || rawDecisionPlan), phase: "FILTERED", action: invalidated ? "Decision invalidated by price crossing invalidation." : expired ? "Decision expired. Waiting for a fresh trigger." : rawDecisionPlan.action, createdAt: prev?.createdAt || Date.now() };
         setDecisionHistory((history) => history[0]?.phase === "FILTERED" && history[0]?.direction === cancelled.direction ? history : [cancelled, ...history].slice(0, 50));
+        console.debug("[Wolvrene] Decision filtered/invalidated", { phase: rawDecisionPlan.phase, invalidated, expired });
         return cancelled;
       }
 
@@ -1580,7 +1592,13 @@ const impulseBoost =
         const stronger = !prev || rawDecisionPlan.quality >= prev.quality || rawDecisionPlan.phase === "EXECUTE";
         if (!sameDirection || stronger || prev.phase === "FILTERED" || prev.phase === "NO_TRADE") {
           const next = { ...rawDecisionPlan, createdAt: prev && sameDirection ? prev.createdAt : Date.now() };
-          setDecisionHistory((history) => history[0]?.id === next.id ? history : [next, ...history].slice(0, 80));
+          setDecisionHistory((history) => {
+            // Prevent duplicate entries by checking if the same decision already exists at the front
+            const exists = history[0]?.id === next.id;
+            if (exists) return history;
+            console.debug("[Wolvrene] DecisionHistory appended", { id: next.id, phase: next.phase, direction: next.direction, quality: next.quality });
+            return [next, ...history].slice(0, 80);
+          });
           return next;
         }
         return { ...prev, phase: prev.phase === "EXECUTE" ? "MANAGE" : prev.phase, action: prev.phase === "EXECUTE" ? `Manage ${prev.direction}. Keep invalidation protected.` : prev.action };
@@ -1592,7 +1610,7 @@ const impulseBoost =
 
       return rawDecisionPlan;
     });
-  }, [rawDecisionPlan.id, rawDecisionPlan.phase, rawDecisionPlan.quality, livePrice]);
+  }, [rawDecisionPlan.id, rawDecisionPlan.phase, rawDecisionPlan.quality, rawDecisionPlan.direction, rawDecisionPlan.shouldMark, livePrice, recentCandles.length, signalPlan.state, signalPlan.direction]);
 
   const decisionPlan = activeDecision || rawDecisionPlan;
   const autoTradeMode = useMemo<TradeMode>(() => {
@@ -1749,22 +1767,47 @@ const impulseBoost =
         ) === idx
     );
     return dedup.slice(0, signalSubscriptionSettings.maxFeedRows);
-  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade]);
+  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade, livePrice, recentCandles.length, signalPlan.state, signalPlan.direction, signalPlan.confidence]);
 
   useEffect(() => {
-    if (!executionEvaluation.canExecute) return;
-    if (!brain.direction || !decisionPlan.entry || !decisionPlan.sl || !decisionPlan.tp1 || !decisionPlan.tp2 || !decisionPlan.tp3) return;
-    const side = brain.direction;
-    const entry = decisionPlan.entry;
-    const sl = decisionPlan.sl;
-    const tp1 = decisionPlan.tp1;
-    const tp2 = decisionPlan.tp2;
-    const tp3 = decisionPlan.tp3;
+    // Primary check: use decisionPlan as source of truth for trade creation
+    const canCreateFromDecision = 
+      decisionPlan.phase === "EXECUTE" &&
+      decisionPlan.direction &&
+      decisionPlan.entry &&
+      decisionPlan.sl &&
+      decisionPlan.tp1 &&
+      decisionPlan.tp2 &&
+      decisionPlan.tp3;
+    
+    // Use decisionPlan as primary source, but still respect riskFirewall via executionEvaluation
+    if (!canCreateFromDecision) {
+      if (executionEvaluation.canExecute === false) {
+        console.debug("[Wolvrene] Trade blocked by executionEvaluation", { 
+          reason: executionEvaluation.blockedReason,
+          decisionPhase: decisionPlan.phase,
+        });
+      }
+      return;
+    }
+    
+    const side = decisionPlan.direction as "LONG" | "SHORT";
+    const entry = decisionPlan.entry as number;
+    const sl = decisionPlan.sl as number;
+    const tp1 = decisionPlan.tp1 as number;
+    const tp2 = decisionPlan.tp2 as number;
+    const tp3 = decisionPlan.tp3 as number;
     const markerEventTime = Number(decisionPlan.markerTime || Math.floor(Date.now() / 1000));
     const tradeEventKey = `${selectedSymbol}-${timeframe}-${activeTradeMode}-${side}-${decisionPlan.phase}-${markerEventTime}`;
+    
     const timer = window.setTimeout(() => {
       setActiveExecutionTrade((prev) => {
-        if (prev?.id === tradeEventKey) return prev;
+        // Prevent duplicate trades
+        if (prev?.id === tradeEventKey) {
+          console.debug("[Wolvrene] Trade already exists", { id: tradeEventKey });
+          return prev;
+        }
+        // Prevent overwriting active trades
         if (
           prev &&
           prev.symbol === selectedSymbol &&
@@ -1775,6 +1818,10 @@ const impulseBoost =
             prev.status === "BREAKEVEN" ||
             prev.status === "CLOSING")
         ) {
+          console.debug("[Wolvrene] Active trade exists, blocking new trade", { 
+            existingId: prev.id, 
+            newId: tradeEventKey 
+          });
           return prev;
         }
         const leverage = Math.max(1, Number(draftLeverage) || 5);
@@ -1783,6 +1830,18 @@ const impulseBoost =
         const notional = margin * leverage;
         const riskLimitedSize = adaptiveSizing.maxRiskUsd / perUnitRisk;
         const size = Math.min(notional / Math.max(entry, 0.00001), riskLimitedSize);
+        
+        console.debug("[Wolvrene] ActiveExecutionTrade created", { 
+          id: tradeEventKey, 
+          side, 
+          entry, 
+          sl, 
+          tp1, 
+          tp2, 
+          tp3,
+          quality: decisionPlan.quality,
+        });
+        
         return {
           id: tradeEventKey,
           symbol: selectedSymbol,
@@ -1814,7 +1873,6 @@ const impulseBoost =
     }, 0);
     return () => window.clearTimeout(timer);
   }, [
-    executionEvaluation.canExecute,
     decisionPlan.phase,
     decisionPlan.direction,
     decisionPlan.entry,
@@ -1832,7 +1890,7 @@ const impulseBoost =
     draftLeverage,
     adaptiveSizing.margin,
     adaptiveSizing.maxRiskUsd,
-    brain.direction,
+    executionEvaluation.canExecute,
   ]);
 
   useEffect(() => {
