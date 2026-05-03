@@ -191,10 +191,6 @@ type RadarFinalSignalMode =
   | "RADAR_APPROVED"
   | "RADAR_BLOCKED";
 
-function normalizeRadarSymbol(symbol: string) {
-  return symbol.replace(/\.P$/i, "").replace(/[-_](PERP|SWAP)$/i, "").trim().toUpperCase();
-}
-
 function readStoredAccessEmail() {
   if (typeof window === "undefined") return "";
   const raw = localStorage.getItem("wolvrene_access_email");
