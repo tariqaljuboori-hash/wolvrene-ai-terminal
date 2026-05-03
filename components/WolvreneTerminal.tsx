@@ -4837,7 +4837,21 @@ function orderRoi(order: TradeOrder) {
           )}
 
           <div className="min-w-0">
-            {!hideUI && (
+            {terminalTab === "radar" ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-amber-300">Market Radar</h2>
+                  <button onClick={() => setTerminalTab("dashboard")} className="rounded border border-amber-700/40 px-3 py-1 text-xs text-amber-300">Back to Dashboard</button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Market Radar Status</p><p className="text-lg font-bold text-amber-300">{marketRadarIntelligence?.state || "Unavailable"}</p></div>
+                  <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Core Exchange Intelligence</p><p className="text-lg font-bold text-emerald-300">{marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial"}</p></div>
+                  <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Professional Data Providers</p><p className="text-sm text-zinc-300">Professional providers are optional and not configured. Core exchange intelligence remains active.</p></div>
+                </div>
+                <MarketRadarPanel defaultSymbol={selectedSymbol} defaultInterval={timeframe} defaultExchange="bitget" onIntelligenceChange={setMarketRadarIntelligence} />
+              </div>
+            ) : (
+            !hideUI && (
               <>
                 <div className="grid md:grid-cols-3 gap-3 mb-4">
                   <div className={`${card} p-4`}>
@@ -4908,6 +4922,7 @@ function orderRoi(order: TradeOrder) {
                   </div>
                 </div>
               </>
+            )
             )}
 
             <div className={`${card} p-3 min-w-0 overflow-hidden`}>
