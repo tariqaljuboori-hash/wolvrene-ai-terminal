@@ -1,0 +1,1 @@
+export function ProviderStatusPanel({status}:{status:Record<string,boolean>}){return <div className='grid grid-cols-2 gap-1 text-xs'>{Object.entries(status).map(([k,v])=><div key={k}>{k}: {v?'configured':'unavailable'}</div>)}</div>;}
