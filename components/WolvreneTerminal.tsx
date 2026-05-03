@@ -918,7 +918,7 @@ type WolvreneUserPrefs = {
   draftPrice: string;
   draftUsd: string;
   draftLeverage: string;
-  terminalTab: "dashboard" | "analytics" | "journal" | "backtest" | "pro";
+  terminalTab: "dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro";
   hideUI: boolean;
 };
 
@@ -960,7 +960,7 @@ export default function WolvreneTerminal() {
   const [tradeModeSelection, setTradeModeSelection] = useState<TradeModeSelection>("AUTO");
   const [selectedSymbol, setSelectedSymbol] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).selectedSymbol || TRADE_SYMBOLS[0].symbol);
   const [assetMenuOpen, setAssetMenuOpen] = useState(false);
-  const [terminalTab, setTerminalTab] = useState<"dashboard" | "analytics" | "journal" | "backtest" | "pro">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).terminalTab || "dashboard");
+  const [terminalTab, setTerminalTab] = useState<"dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).terminalTab || "dashboard");
   const [backtestRange, setBacktestRange] = useState<100 | 500 | 1000>(500);
   const [eliteJournal, setEliteJournal] = useState<EliteJournalEntry[]>(() =>
     storageGet<EliteJournalEntry[]>(eliteJournalKey(), [])
@@ -4523,6 +4523,16 @@ function orderRoi(order: TradeOrder) {
       
       {terminalTab !== "dashboard" && (
         <div className={`${card} mb-4 p-4`}>
+          {terminalTab === "radar" && (
+            <div className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Market Radar Status</p><p className="text-lg font-bold text-amber-300">{marketRadarIntelligence?.state || "Unavailable"}</p><p className="text-xs text-zinc-500">{marketRadarIntelligence?.decisionSummary || "Waiting for data"}</p></div>
+                <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Core Exchange Intelligence</p><p className="text-lg font-bold text-emerald-300">{marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial"}</p></div>
+                <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Professional Data Providers</p><p className="text-lg font-bold text-zinc-300">Optional / Not configured</p></div>
+              </div>
+              <MarketRadarPanel defaultSymbol={selectedSymbol} defaultInterval={timeframe} defaultExchange="bitget" onIntelligenceChange={setMarketRadarIntelligence} />
+            </div>
+          )}
           {terminalTab === "analytics" && (
             <div>
               <h3 className="mb-4 text-sm font-black uppercase tracking-[0.18em] text-yellow-400">Accuracy Analytics</h3>
@@ -4654,12 +4664,13 @@ function orderRoi(order: TradeOrder) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[92px_300px_minmax(0,1fr)_374px]">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[84px_280px_minmax(0,1fr)_350px]">
           {!hideUI && (
             <aside className={`${terminalPanel} flex flex-col items-center gap-2 p-2.5`}>
               {[
                 { label: "Dashboard", icon: "▦", tab: "dashboard" as const },
                 { label: "Signal Feed", icon: "◉", tab: "dashboard" as const },
+                { label: "Market Radar", icon: "◈", tab: "radar" as const },
                 { label: "Analytics", icon: "◫", tab: "analytics" as const },
                 { label: "Journal", icon: "⌘", tab: "journal" as const },
                 { label: "Backtest", icon: "⟲", tab: "backtest" as const },
@@ -4704,7 +4715,7 @@ function orderRoi(order: TradeOrder) {
           )}
 
           {!hideUI && (
-            <div className={`${terminalPanel} min-w-0 p-3`}>
+            <div className={`${terminalPanel} min-w-0 p-2.5 space-y-2`}>
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-sm font-bold tracking-[0.14em] text-[#f4f4f5]">SIGNAL FEED</h3>
                 <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[9px] font-black text-green-300">LIVE</span>
@@ -4723,7 +4734,22 @@ function orderRoi(order: TradeOrder) {
                   {signalFeedRows.length}
                 </button>
               </div>
-              <div className="max-h-[770px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
+
+              <div className="rounded-xl border border-amber-700/40 bg-black/50 p-2.5 text-xs">
+                <div className="flex items-center justify-between mb-1"><p className="font-bold text-amber-300">Market Radar</p><button onClick={() => setTerminalTab("radar")} className="rounded border border-amber-700/40 px-2 py-0.5 text-[10px] text-amber-300">Open Radar</button></div>
+                <div className="grid grid-cols-2 gap-1 text-[11px] text-zinc-300">
+                  <div>State: <span className="text-amber-200">{marketRadarIntelligence?.state || "Unavailable"}</span></div>
+                  <div>Bias: <span className="text-amber-200">{marketRadarIntelligence?.bias || "Unknown"}</span></div>
+                  <div>Confidence: <span className="text-amber-200">{marketRadarIntelligence?.confidence ?? "--"}</span></div>
+                  <div>Session: <span className="text-amber-200">{marketRadarIntelligence?.session?.activeSession || "--"}</span></div>
+                </div>
+                <p className="mt-1 text-[10px] text-zinc-400">Core Exchange Intelligence: {marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial/Unavailable"}</p>
+                <p className="text-[10px] text-zinc-400">Professional Data Providers: Optional / Not configured</p>
+                <p className="mt-1 line-clamp-2 text-[10px] text-zinc-400">{marketRadarIntelligence?.decisionSummary || "Waiting for core exchange intelligence..."}</p>
+                <p className="text-[10px] text-orange-300">Derived Hunt Pressure: {marketRadarIntelligence?.liquidationMap?.source === "derived" ? "Estimated from exchange behavior" : "N/A"}</p>
+                <p className="line-clamp-1 text-[10px] text-zinc-500">Risk: {marketRadarIntelligence?.riskNotes?.[0] || "No risk note yet."}</p>
+              </div>
+              <div className="max-h-[360px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
                 {signalFeedRows.length === 0 && <p className="text-xs text-[#8b9098]">No subscribed signal rows yet.</p>}
                 {signalFeedRows.map((row, index) => (
                   <button
