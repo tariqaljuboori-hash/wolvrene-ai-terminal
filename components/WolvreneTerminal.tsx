@@ -954,6 +954,8 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 export default function WolvreneTerminal() {
   const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
   const [marketRadarIntelligence, setMarketRadarIntelligence] = useState<MarketIntelligence | null>(null);
+  const [marketRadarLoading, setMarketRadarLoading] = useState(false);
+  const [marketRadarSource, setMarketRadarSource] = useState<"shared-fetch" | "panel-callback" | "none">("none");
   const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
     const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
     const cachedEmail = storageGet("wolvrene_access_email", "");
@@ -1732,8 +1734,39 @@ const impulseBoost =
     decisionPlan.direction !== brain.direction ||
     decisionPlan.phase !== brain.decision.phase ||
     signalPlan.confidence !== brain.confidence;
+  const normalizedRadarSymbol = useMemo(() => normalizeRadarSymbol(selectedSymbol), [selectedSymbol]);
+
+  useEffect(() => {
+    let mounted = true;
+    const controller = new AbortController();
+    const loadRadar = async () => {
+      setMarketRadarLoading(true);
+      try {
+        const response = await fetch(
+          `/api/market/intelligence?exchange=bitget&symbol=${encodeURIComponent(normalizedRadarSymbol)}&interval=${encodeURIComponent(timeframe)}&providers=true&limit=80`,
+          { cache: "no-store", signal: controller.signal }
+        );
+        const json = await response.json();
+        if (mounted && json?.state) {
+          setMarketRadarIntelligence(json);
+          setMarketRadarSource("shared-fetch");
+        }
+      } catch {
+        // keep last known radar; avoid forcing DATA_UNAVAILABLE on transient fetch errors
+      } finally {
+        if (mounted) setMarketRadarLoading(false);
+      }
+    };
+    loadRadar();
+    const id = setInterval(loadRadar, 30000);
+    return () => {
+      mounted = false;
+      controller.abort();
+      clearInterval(id);
+    };
+  }, [normalizedRadarSymbol, timeframe]);
   const radarGate = useMemo(() => {
-    const radarState = marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE";
+    const radarState = marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE");
     const radarBias = marketRadarIntelligence?.bias ?? "UNKNOWN";
     const legacySignal = decisionPlan.direction || signalPlan.direction || null;
     const directionAligned =
@@ -1750,14 +1783,15 @@ const impulseBoost =
     let radarGateResult: "PASSED" | "BLOCKED" | "WAITING" | "LEGACY_ONLY" = "LEGACY_ONLY";
     let radarGateReason = "Radar unavailable — legacy signal only";
     let finalSignalSource: "LEGACY" | "MARKET_RADAR" | "COMBINED" = "LEGACY";
-    if (radarState === "HUNT_BUILDING") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Blocked: Radar has not confirmed reaction"; }
+    if (radarState === "RADAR_LOADING") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Loading radar..."; }
+    else if (radarState === "HUNT_BUILDING") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Blocked: Radar has not confirmed reaction"; }
     else if (radarState === "LIQUIDITY_SWEPT") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Waiting: liquidity swept but no reclaim yet"; }
     else if (radarState === "TRAP_POSSIBLE") { finalSignalMode = "RADAR_CONFIRMATION_REQUIRED"; radarGateResult = "WAITING"; radarGateReason = "Trap possible — confirmation required"; }
     else if (radarState === "REACTION_CONFIRMED") { finalSignalMode = "RADAR_VALIDATED"; radarGateResult = directionAligned ? "PASSED" : "BLOCKED"; radarGateReason = directionAligned ? "Passed: reaction confirmed by radar" : "Blocked: Radar bias conflicts with legacy direction"; finalSignalSource = directionAligned ? "COMBINED" : "MARKET_RADAR"; }
     else if (radarState === "TRADE_ALLOWED") { finalSignalMode = "RADAR_APPROVED"; radarGateResult = directionAligned ? "PASSED" : "BLOCKED"; radarGateReason = directionAligned ? "Passed: Radar approved with aligned direction" : "Blocked: direction/risk alignment failed"; finalSignalSource = directionAligned ? "COMBINED" : "MARKET_RADAR"; }
     else if (radarState === "NO_TRADE") { finalSignalMode = "RADAR_BLOCKED"; radarGateResult = "BLOCKED"; radarGateReason = "Blocked: Radar no-trade state"; finalSignalSource = "MARKET_RADAR"; }
     return { legacySignal, radarState, radarBias, directionAligned, finalSignalMode, radarGateResult, radarGateReason, finalSignalSource };
-  }, [marketRadarIntelligence, decisionPlan.direction, signalPlan.direction]);
+  }, [marketRadarIntelligence, marketRadarLoading, decisionPlan.direction, signalPlan.direction]);
   const signalFeedRows = useMemo(() => {
     const hasActiveExecution = Boolean(
       activeExecutionTrade &&
@@ -4585,7 +4619,15 @@ function orderRoi(order: TradeOrder) {
                 <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Core Exchange Intelligence</p><p className="text-lg font-bold text-emerald-300">{marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial"}</p></div>
                 <div className={`${card} p-3`}><p className="text-xs text-zinc-400">Professional Data Providers</p><p className="text-lg font-bold text-zinc-300">Optional / Not configured</p></div>
               </div>
-              <MarketRadarPanel defaultSymbol={selectedSymbol} defaultInterval={timeframe} defaultExchange="bitget" onIntelligenceChange={setMarketRadarIntelligence} />
+              <MarketRadarPanel
+                defaultSymbol={normalizedRadarSymbol}
+                defaultInterval={timeframe}
+                defaultExchange="bitget"
+                onIntelligenceChange={(intelligence) => {
+                  setMarketRadarIntelligence(intelligence);
+                  setMarketRadarSource("panel-callback");
+                }}
+              />
             </div>
           )}
           {terminalTab === "analytics" && (
@@ -4790,19 +4832,21 @@ function orderRoi(order: TradeOrder) {
                 </button>
               </div>
 
-              <div className="rounded-xl border border-amber-700/40 bg-black/50 p-2.5 text-xs">
-                <div className="flex items-center justify-between mb-1"><p className="font-bold text-amber-300">Market Radar</p><button onClick={() => setTerminalTab("radar")} className="rounded border border-amber-700/40 px-2 py-0.5 text-[10px] text-amber-300">Open Radar</button></div>
-                <div className="grid grid-cols-2 gap-1 text-[11px] text-zinc-300">
-                  <div>State: <span className="text-amber-200">{marketRadarIntelligence?.state || "Unavailable"}</span></div>
+              <div className="rounded-xl border border-amber-700/40 bg-black/50 p-2 text-xs">
+                <div className="mb-1 flex items-center justify-between"><p className="font-bold text-amber-300">Market Radar</p><button onClick={() => setTerminalTab("radar")} className="rounded border border-amber-700/40 px-2 py-0.5 text-[10px] text-amber-300">Open Radar</button></div>
+                <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-300">
+                  <div>State: <span className="text-amber-200">{marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state || "Unavailable")}</span></div>
                   <div>Bias: <span className="text-amber-200">{marketRadarIntelligence?.bias || "Unknown"}</span></div>
-                  <div>Confidence: <span className="text-amber-200">{marketRadarIntelligence?.confidence ?? "--"}</span></div>
-                  <div>Session: <span className="text-amber-200">{marketRadarIntelligence?.session?.activeSession || "--"}</span></div>
+                  <div>Confidence: <span className="text-amber-200">{marketRadarIntelligence?.confidence ? `${marketRadarIntelligence.confidence.toFixed(1)}%` : "--"}</span></div>
+                  <div>Core: <span className="text-amber-200">{marketRadarLoading ? "Loading radar..." : marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial"}</span></div>
                 </div>
-                <p className="mt-1 text-[10px] text-zinc-400">Core Exchange Intelligence: {marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial/Unavailable"}</p>
-                <p className="text-[10px] text-zinc-400">Professional Data Providers: Optional / Not configured</p>
-                <p className="mt-1 line-clamp-2 text-[10px] text-zinc-400">{marketRadarIntelligence?.decisionSummary || "Waiting for core exchange intelligence..."}</p>
-                <p className="text-[10px] text-orange-300">Derived Hunt Pressure: {marketRadarIntelligence?.liquidationMap?.source === "derived" ? "Estimated from exchange behavior" : "N/A"}</p>
-                <p className="line-clamp-1 text-[10px] text-zinc-500">Risk: {marketRadarIntelligence?.riskNotes?.[0] || "No risk note yet."}</p>
+                <p className="mt-1 line-clamp-1 text-[10px] text-zinc-400">{marketRadarIntelligence?.decisionSummary || "Waiting for core exchange intelligence..."}</p>
+                <p className="text-[10px] text-zinc-400">Providers: Optional</p>
+                {process.env.NODE_ENV !== "production" && (
+                  <p className="mt-1 text-[9px] text-zinc-500">
+                    displayedSymbol={selectedSymbol} · normalizedRadarSymbol={normalizedRadarSymbol} · radarState={radarGate.radarState} · radarSource={marketRadarSource}
+                  </p>
+                )}
               </div>
               <div className="max-h-[360px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
                 {signalFeedRows.length === 0 && <p className="text-xs text-[#8b9098]">No subscribed signal rows yet.</p>}
