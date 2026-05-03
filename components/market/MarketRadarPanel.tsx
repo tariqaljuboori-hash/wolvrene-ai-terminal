@@ -1,12 +1,29 @@
 "use client";
-import { useEffect, useRef, useState } from 'react';
-import type { MarketIntelligence } from '@/lib/market/types';
-import { MarketStateBadge } from './MarketStateBadge';
-import { LiquidityMapPanel } from './LiquidityMapPanel';
-import { OrderFlowPanel } from './OrderFlowPanel';
-import { ProviderStatusPanel } from './ProviderStatusPanel';
 
-export default function MarketRadarPanel({ defaultSymbol = 'BTCUSDT', defaultInterval = '15m', defaultExchange = 'bitget', onIntelligenceChange }: { defaultSymbol?: string; defaultInterval?: string; defaultExchange?: string; onIntelligenceChange?: (i: MarketIntelligence | null) => void; }) {
+import { useEffect, useRef, useState } from "react";
+
+import type { MarketIntelligence } from "@/lib/market/types";
+
+import { LiquidityMapPanel } from "./LiquidityMapPanel";
+import { MarketStateBadge } from "./MarketStateBadge";
+import { OrderFlowPanel } from "./OrderFlowPanel";
+import { ProviderStatusPanel } from "./ProviderStatusPanel";
+
+// Conflict-safe unified panel implementation.
+
+type Props = {
+  defaultSymbol?: string;
+  defaultInterval?: string;
+  defaultExchange?: string;
+  onIntelligenceChange?: (intelligence: MarketIntelligence | null) => void;
+};
+
+export default function MarketRadarPanel({
+  defaultSymbol = "BTCUSDT",
+  defaultInterval = "15m",
+  defaultExchange = "bitget",
+  onIntelligenceChange,
+}: Props) {
   const [exchange, setExchange] = useState(defaultExchange);
   const [symbol, setSymbol] = useState(defaultSymbol);
   const [interval, setRadarInterval] = useState(defaultInterval);

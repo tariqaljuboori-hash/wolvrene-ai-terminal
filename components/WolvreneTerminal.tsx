@@ -183,6 +183,13 @@ type SessionSniperState = {
   allowSignal: boolean;
   reason: string;
 };
+type RadarFinalSignalMode =
+  | "LEGACY_MODE"
+  | "RADAR_WAIT"
+  | "RADAR_CONFIRMATION_REQUIRED"
+  | "RADAR_VALIDATED"
+  | "RADAR_APPROVED"
+  | "RADAR_BLOCKED";
 
 function readStoredAccessEmail() {
   if (typeof window === "undefined") return "";
@@ -1725,6 +1732,32 @@ const impulseBoost =
     decisionPlan.direction !== brain.direction ||
     decisionPlan.phase !== brain.decision.phase ||
     signalPlan.confidence !== brain.confidence;
+  const radarGate = useMemo(() => {
+    const radarState = marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE";
+    const radarBias = marketRadarIntelligence?.bias ?? "UNKNOWN";
+    const legacySignal = decisionPlan.direction || signalPlan.direction || null;
+    const directionAligned =
+      !legacySignal
+        ? false
+        : radarBias === "BULLISH_REACTION"
+        ? legacySignal === "LONG"
+        : radarBias === "BEARISH_REACTION"
+        ? legacySignal === "SHORT"
+        : radarBias === "NEUTRAL" || radarBias === "CONFLICTED"
+        ? false
+        : true;
+    let finalSignalMode: RadarFinalSignalMode = "LEGACY_MODE";
+    let radarGateResult: "PASSED" | "BLOCKED" | "WAITING" | "LEGACY_ONLY" = "LEGACY_ONLY";
+    let radarGateReason = "Radar unavailable — legacy signal only";
+    let finalSignalSource: "LEGACY" | "MARKET_RADAR" | "COMBINED" = "LEGACY";
+    if (radarState === "HUNT_BUILDING") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Blocked: Radar has not confirmed reaction"; }
+    else if (radarState === "LIQUIDITY_SWEPT") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Waiting: liquidity swept but no reclaim yet"; }
+    else if (radarState === "TRAP_POSSIBLE") { finalSignalMode = "RADAR_CONFIRMATION_REQUIRED"; radarGateResult = "WAITING"; radarGateReason = "Trap possible — confirmation required"; }
+    else if (radarState === "REACTION_CONFIRMED") { finalSignalMode = "RADAR_VALIDATED"; radarGateResult = directionAligned ? "PASSED" : "BLOCKED"; radarGateReason = directionAligned ? "Passed: reaction confirmed by radar" : "Blocked: Radar bias conflicts with legacy direction"; finalSignalSource = directionAligned ? "COMBINED" : "MARKET_RADAR"; }
+    else if (radarState === "TRADE_ALLOWED") { finalSignalMode = "RADAR_APPROVED"; radarGateResult = directionAligned ? "PASSED" : "BLOCKED"; radarGateReason = directionAligned ? "Passed: Radar approved with aligned direction" : "Blocked: direction/risk alignment failed"; finalSignalSource = directionAligned ? "COMBINED" : "MARKET_RADAR"; }
+    else if (radarState === "NO_TRADE") { finalSignalMode = "RADAR_BLOCKED"; radarGateResult = "BLOCKED"; radarGateReason = "Blocked: Radar no-trade state"; finalSignalSource = "MARKET_RADAR"; }
+    return { legacySignal, radarState, radarBias, directionAligned, finalSignalMode, radarGateResult, radarGateReason, finalSignalSource };
+  }, [marketRadarIntelligence, decisionPlan.direction, signalPlan.direction]);
   const signalFeedRows = useMemo(() => {
     const hasActiveExecution = Boolean(
       activeExecutionTrade &&
@@ -1743,6 +1776,10 @@ const impulseBoost =
         status: hasActiveExecution && item.phase === "EXECUTE" ? "MANAGE" : item.phase,
         confidence: item.quality,
         reason: item.reason.slice(0, 90),
+        radarState: radarGate.radarState,
+        radarGateResult: radarGate.radarGateResult,
+        finalSignalSource: radarGate.finalSignalSource,
+        gateReason: radarGate.radarGateReason,
         candleTime: Number(item.markerTime || 0),
         executable: !hasActiveExecution && (item.phase === "EXECUTE" || item.phase === "VALIDATED"),
       }))
@@ -1762,7 +1799,17 @@ const impulseBoost =
         ) === idx
     );
     return dedup.slice(0, signalSubscriptionSettings.maxFeedRows);
-  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade, livePrice, recentCandles.length, signalPlan.state, signalPlan.direction, signalPlan.confidence]);
+  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade, livePrice, recentCandles.length, signalPlan.state, signalPlan.direction, signalPlan.confidence, radarGate.radarState, radarGate.radarGateResult, radarGate.finalSignalSource, radarGate.radarGateReason]);
+
+  useEffect(() => {
+    console.debug("[RadarGate]", {
+      legacySignal: radarGate.legacySignal,
+      radarState: radarGate.radarState,
+      radarBias: radarGate.radarBias,
+      finalSignalMode: radarGate.finalSignalMode,
+      radarGateReason: radarGate.radarGateReason,
+    });
+  }, [radarGate.legacySignal, radarGate.radarState, radarGate.radarBias, radarGate.finalSignalMode, radarGate.radarGateReason]);
 
   useEffect(() => {
     // Primary check: use decisionPlan as source of truth for trade creation
@@ -2907,6 +2954,13 @@ useEffect(() => {
 
   function createOrder(side: Direction, basePrice?: number) {
     if (!side) return;
+    const radarExecutionAllowed =
+      radarGate.finalSignalMode === "RADAR_APPROVED" ||
+      (radarGate.finalSignalMode === "RADAR_VALIDATED" && radarGate.directionAligned);
+    if (!radarExecutionAllowed) {
+      addJournal("Radar gate blocked execution.");
+      return;
+    }
 
     const price = basePrice || (orderType === "limit" ? Number(draftPrice) : livePrice) || livePrice || lastCandleRef.current?.close;
     if (!price) return;
@@ -3445,8 +3499,9 @@ function orderRoi(order: TradeOrder) {
     nearestLiquidationBelow: marketRadarIntelligence.liquidationMap.nearestBelow?.price ?? null,
     invalidation: marketRadarIntelligence.invalidation, targetLiquidity: marketRadarIntelligence.targetLiquidity,
     confidence: marketRadarIntelligence.confidence, decisionSummary: marketRadarIntelligence.decisionSummary,
-    tacticalPlan: marketRadarIntelligence.tacticalPlan, riskNotes: marketRadarIntelligence.riskNotes, stale: marketRadarIntelligence.stale, errors: marketRadarIntelligence.errors
-  }) : { state: 'DATA_UNAVAILABLE', message: 'radar data is unavailable' }, [marketRadarIntelligence]);
+    tacticalPlan: marketRadarIntelligence.tacticalPlan, riskNotes: marketRadarIntelligence.riskNotes, stale: marketRadarIntelligence.stale, errors: marketRadarIntelligence.errors,
+    radarGateDecision: radarGate.radarGateResult, finalSignalMode: radarGate.finalSignalMode, legacySignal: radarGate.legacySignal
+  }) : { state: 'DATA_UNAVAILABLE', message: 'radar data is unavailable', radarGateDecision: radarGate.radarGateResult, finalSignalMode: radarGate.finalSignalMode, legacySignal: radarGate.legacySignal }, [marketRadarIntelligence, radarGate.radarGateResult, radarGate.finalSignalMode, radarGate.legacySignal]);
 
   const aiLiveContext = useMemo<LiveContext>(() => ({
     symbol: selectedSymbol,
@@ -4769,7 +4824,12 @@ function orderRoi(order: TradeOrder) {
                       <span className={`rounded-full px-1.5 py-0.5 font-bold ${row.side === "LONG" ? "bg-green-500/10 text-[#00e676]" : "bg-red-500/10 text-[#ff3b30]"}`}>{row.side}</span>
                     </div>
                     <p className="mt-1 text-[11px] text-[#f4f4f5]">{row.status} · {row.confidence}%</p>
-                    <p className="mt-0.5 text-[10px] text-[#8b9098]">{row.reason}</p>
+                    <div className="mt-1 flex flex-wrap gap-1 text-[9px]">
+                      <span className="rounded border border-zinc-700 px-1 py-0.5">Radar {row.radarState}</span>
+                      <span className={`rounded border px-1 py-0.5 ${row.radarGateResult === "PASSED" ? "border-green-700 text-green-300" : row.radarGateResult === "BLOCKED" ? "border-red-700 text-red-300" : row.radarGateResult === "WAITING" ? "border-yellow-700 text-yellow-300" : "border-zinc-700 text-zinc-300"}`}>{row.radarGateResult}</span>
+                      <span className="rounded border border-zinc-700 px-1 py-0.5">{row.finalSignalSource}</span>
+                    </div>
+                    <p className="mt-0.5 text-[10px] text-[#8b9098]">{row.gateReason}</p>
                   </button>
                 ))}
               </div>
@@ -5417,6 +5477,11 @@ function orderRoi(order: TradeOrder) {
                 </div>
 
                 <div className="mt-4 rounded-xl border border-zinc-800 bg-black/60 p-3 text-xs space-y-1">
+                  <div className="flex justify-between"><span className="text-gray-500">Final signal mode</span><span className="text-amber-300">{radarGate.finalSignalMode}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">radarState</span><span>{radarGate.radarState}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">radarBias</span><span>{radarGate.radarBias}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Radar gate result</span><span>{radarGate.radarGateResult}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">legacySignal</span><span>{radarGate.legacySignal || "--"}</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">Entry</span><span>{v25FinalBrain.entry ? formatPrice(v25FinalBrain.entry) : "--"}</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">SL</span><span className="text-red-300">{v25FinalBrain.sl ? formatPrice(v25FinalBrain.sl) : "--"}</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">TP1</span><span className="text-green-300">{v25FinalBrain.tp1 ? formatPrice(v25FinalBrain.tp1) : "--"}</span></div>
@@ -5425,6 +5490,7 @@ function orderRoi(order: TradeOrder) {
                 </div>
 
                 <p className="text-xs text-gray-400 mt-4">{v25FinalBrain.reason}</p>
+                <p className="text-xs text-yellow-500 mt-1">{radarGate.radarGateReason}</p>
                 {signalPlan.warning && <p className="text-[11px] text-yellow-500 mt-2">{signalPlan.warning}</p>}
 
                 {decisionSettings.showDecisionPanel && (
