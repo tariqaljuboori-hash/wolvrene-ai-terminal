@@ -4790,16 +4790,19 @@ function orderRoi(order: TradeOrder) {
                 </button>
               </div>
 
-              <div className="rounded-xl border border-amber-700/40 bg-black/50 p-2 text-xs">
-                <div className="mb-1 flex items-center justify-between"><p className="font-bold text-amber-300">Market Radar</p><button onClick={() => setTerminalTab("radar")} className="rounded border border-amber-700/40 px-2 py-0.5 text-[10px] text-amber-300">Open Radar</button></div>
-                <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-300">
+              <div className="rounded-xl border border-amber-700/40 bg-black/50 p-2.5 text-xs">
+                <div className="flex items-center justify-between mb-1"><p className="font-bold text-amber-300">Market Radar</p><button onClick={() => setTerminalTab("radar")} className="rounded border border-amber-700/40 px-2 py-0.5 text-[10px] text-amber-300">Open Radar</button></div>
+                <div className="grid grid-cols-2 gap-1 text-[11px] text-zinc-300">
                   <div>State: <span className="text-amber-200">{marketRadarIntelligence?.state || "Unavailable"}</span></div>
                   <div>Bias: <span className="text-amber-200">{marketRadarIntelligence?.bias || "Unknown"}</span></div>
-                  <div>Confidence: <span className="text-amber-200">{marketRadarIntelligence?.confidence ? `${marketRadarIntelligence.confidence.toFixed(1)}%` : "--"}</span></div>
-                  <div>Core: <span className="text-amber-200">{marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial"}</span></div>
+                  <div>Confidence: <span className="text-amber-200">{marketRadarIntelligence?.confidence ?? "--"}</span></div>
+                  <div>Session: <span className="text-amber-200">{marketRadarIntelligence?.session?.activeSession || "--"}</span></div>
                 </div>
-                <p className="mt-1 line-clamp-1 text-[10px] text-zinc-400">{marketRadarIntelligence?.decisionSummary || "Waiting for core exchange intelligence..."}</p>
-                <p className="text-[10px] text-zinc-400">Providers: Optional</p>
+                <p className="mt-1 text-[10px] text-zinc-400">Core Exchange Intelligence: {marketRadarIntelligence && marketRadarIntelligence.state !== "DATA_UNAVAILABLE" ? "Active" : "Partial/Unavailable"}</p>
+                <p className="text-[10px] text-zinc-400">Professional Data Providers: Optional / Not configured</p>
+                <p className="mt-1 line-clamp-2 text-[10px] text-zinc-400">{marketRadarIntelligence?.decisionSummary || "Waiting for core exchange intelligence..."}</p>
+                <p className="text-[10px] text-orange-300">Derived Hunt Pressure: {marketRadarIntelligence?.liquidationMap?.source === "derived" ? "Estimated from exchange behavior" : "N/A"}</p>
+                <p className="line-clamp-1 text-[10px] text-zinc-500">Risk: {marketRadarIntelligence?.riskNotes?.[0] || "No risk note yet."}</p>
               </div>
               <div className="max-h-[360px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
                 {signalFeedRows.length === 0 && <p className="text-xs text-[#8b9098]">No subscribed signal rows yet.</p>}
