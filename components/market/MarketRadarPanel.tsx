@@ -9,6 +9,8 @@ import { MarketStateBadge } from "./MarketStateBadge";
 import { OrderFlowPanel } from "./OrderFlowPanel";
 import { ProviderStatusPanel } from "./ProviderStatusPanel";
 
+// Conflict-safe unified panel implementation.
+
 type Props = {
   defaultSymbol?: string;
   defaultInterval?: string;
