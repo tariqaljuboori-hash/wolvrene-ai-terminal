@@ -1,0 +1,2 @@
+import { NextResponse } from 'next/server';
+export async function GET(){return NextResponse.json({coinglass:!!process.env.COINGLASS_API_KEY,hyblock:!!process.env.HYBLOCK_API_KEY,velo:!!process.env.VELO_API_KEY,laevitas:!!process.env.LAEVITAS_API_KEY,deribit:!!(process.env.DERIBIT_CLIENT_ID&&process.env.DERIBIT_CLIENT_SECRET),glassnode:!!process.env.GLASSNODE_API_KEY,cryptoquant:!!process.env.CRYPTOQUANT_API_KEY},{headers:{'Cache-Control':'no-store'}})}
