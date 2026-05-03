@@ -1,0 +1,4 @@
+import type { FundingData, LiquidationMap, LongShortData, OnChainFlow, OpenInterestData, OptionsMap } from "../types";
+export type ProviderBundle={liquidationMap?:LiquidationMap;optionsMap?:OptionsMap;onChainFlow?:OnChainFlow;funding?:FundingData;openInterest?:OpenInterestData;longShort?:LongShortData;status:"ok"|"unavailable";reason?:string};
+const unavailableL={levels:[],nearestAbove:null,nearestBelow:null,source:'unavailable' as const,unavailableReason:'Provider unavailable'}; const unavailableO={levels:[],maxPain:null,source:'unavailable' as const,unavailableReason:'Provider unavailable'}; const unavailableC={exchangeInflow:null,exchangeOutflow:null,netflow:null,stablecoinInflow:null,whaleActivity:'UNKNOWN' as const,source:'unavailable' as const,unavailableReason:'Provider unavailable'};
+export const unavailableProvider=():ProviderBundle=>({status:'unavailable',liquidationMap:unavailableL,optionsMap:unavailableO,onChainFlow:unavailableC});

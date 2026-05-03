@@ -1,0 +1,5 @@
+import type { Candle, ExchangeId, FundingData, LongShortData, MarketInterval, OpenInterestData, OrderBook, TradePrint } from "../types";
+import { binanceConnector } from './binance'; import { bybitConnector } from './bybit'; import { bitgetConnector } from './bitget'; import { okxConnector } from './okx';
+export type ExchangeConnector={getCandles:(s:string,i:MarketInterval,l:number)=>Promise<Candle[]>;getPrice:(s:string)=>Promise<number|null>;getMarkPrice:(s:string)=>Promise<number|null>;getOrderBook:(s:string,l:number)=>Promise<OrderBook|null>;getFunding:(s:string)=>Promise<FundingData>;getOpenInterest:(s:string)=>Promise<OpenInterestData>;getOpenInterestHistory:(s:string,i:MarketInterval,l:number)=>Promise<{time:number;value:number}[]>;getRecentTrades:(s:string,l:number)=>Promise<TradePrint[]>;getLongShortRatio:(s:string)=>Promise<LongShortData>};
+const all={binance:binanceConnector,bybit:bybitConnector,bitget:bitgetConnector,okx:okxConnector};
+export const getExchangeConnector=(ex:ExchangeId)=>all[ex];

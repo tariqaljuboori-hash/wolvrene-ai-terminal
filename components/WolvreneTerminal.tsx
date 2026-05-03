@@ -32,6 +32,8 @@ import {
   clampLeverage,
   normalizeOrderFinancials,
 } from "@/lib/tradeCalculations";
+import MarketRadarPanel from "@/components/market/MarketRadarPanel";
+import type { MarketIntelligence } from "@/lib/market/types";
 import type {
   Candle,
   ChartSettings,
@@ -64,8 +66,7 @@ type AccessStatus = "checking" | "granted" | "locked";
 const WOLVRENE_ACCESS_CONFIG = {
   whopLink: "https://whop.com/wolvrene-trade/?a=alpha-wolvrene",
   supportText: "If you already subscribed, login with the same email used on Whop.",
-  ownerEmail: "tariq.aljuboori@gmail.com",
-};
+  };
 
 
 type TradeSymbol = {
@@ -945,6 +946,7 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 
 export default function WolvreneTerminal() {
   const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
+  const [marketRadarIntelligence, setMarketRadarIntelligence] = useState<MarketIntelligence | null>(null);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>(() => {
     const cachedAccess = storageGet<string | boolean>("wolvrene_access_granted", "false");
     const cachedEmail = storageGet("wolvrene_access_email", "");
@@ -1175,13 +1177,6 @@ useEffect(() => {
       return;
     }
 
-    if (cleanEmail === WOLVRENE_ACCESS_CONFIG.ownerEmail) {
-      storageSet("wolvrene_access_granted", true);
-      storageSet("wolvrene_access_email", cleanEmail);
-      setAccessEmail(cleanEmail);
-      setAccessStatus("granted");
-      return;
-    }
 
     setAccessLoading(true);
     setAccessError("");
@@ -3440,6 +3435,19 @@ function orderRoi(order: TradeOrder) {
     };
   }, [activeExecutionTradeView, selectedOrder, livePrice, brain.managementPlaybook.action, sanitizedBrainPayload.risk]);
 
+
+  const marketRadarForAI = useMemo(() => marketRadarIntelligence ? ({
+    state: marketRadarIntelligence.state, bias: marketRadarIntelligence.bias, price: marketRadarIntelligence.price,
+    activeSession: marketRadarIntelligence.session.activeSession, latestSweep: marketRadarIntelligence.latestSweep,
+    fundingBias: marketRadarIntelligence.fundingBias, openInterestBias: marketRadarIntelligence.openInterestBias,
+    longShortBias: marketRadarIntelligence.longShortBias, absorption: marketRadarIntelligence.orderFlow.absorption,
+    nearestLiquidationAbove: marketRadarIntelligence.liquidationMap.nearestAbove?.price ?? null,
+    nearestLiquidationBelow: marketRadarIntelligence.liquidationMap.nearestBelow?.price ?? null,
+    invalidation: marketRadarIntelligence.invalidation, targetLiquidity: marketRadarIntelligence.targetLiquidity,
+    confidence: marketRadarIntelligence.confidence, decisionSummary: marketRadarIntelligence.decisionSummary,
+    tacticalPlan: marketRadarIntelligence.tacticalPlan, riskNotes: marketRadarIntelligence.riskNotes, stale: marketRadarIntelligence.stale, errors: marketRadarIntelligence.errors
+  }) : { state: 'DATA_UNAVAILABLE', message: 'radar data is unavailable' }, [marketRadarIntelligence]);
+
   const aiLiveContext = useMemo<LiveContext>(() => ({
     symbol: selectedSymbol,
     mode: activeTradeMode,
@@ -3455,7 +3463,8 @@ function orderRoi(order: TradeOrder) {
     ordersCount: orders.length,
     alertsCount: alerts.length,
     candleTrend: candlesSummary.trend,
-  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, marketStats.volume, brain.marketRegime, candlesSummary.trend, marketStats.funding, orders.length, alerts.length]);
+    marketRadar: marketRadarForAI,
+  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, marketStats.volume, brain.marketRegime, candlesSummary.trend, marketStats.funding, orders.length, alerts.length, marketRadarForAI]);
 
   const activeTradeContext = useMemo<SelectedTradeContext>(() => {
     if (activeExecutionTradeView) {
@@ -4304,6 +4313,7 @@ function orderRoi(order: TradeOrder) {
   const editorOrderValue = editorOrder();
   const editorTPValue = editorTP();
 
+  
   const selectedSymbolMeta = TRADE_SYMBOLS.find((item) => item.symbol === selectedSymbol) || TRADE_SYMBOLS[0];
   const selectedSymbolLabel = selectedSymbolMeta.label;
   const unifiedLiveContext = useMemo(() => ({
