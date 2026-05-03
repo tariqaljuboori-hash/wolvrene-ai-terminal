@@ -1,0 +1,2 @@
+import type { MarketIntelligence } from '../types';
+export const formatRadarAlert=(x:MarketIntelligence)=>`WOLVRENE MARKET RADAR\n${x.symbol} / ${x.exchange} / ${x.interval}\nState: ${x.state} | Bias: ${x.bias} | Confidence: ${x.confidence}\nLatest Sweep: ${x.latestSweep?`${x.latestSweep.direction} @ ${x.latestSweep.levelPrice}`:'None'}\nInvalidation: ${x.invalidation??'N/A'}\nTarget Liquidity: ${x.targetLiquidity??'N/A'}\nRisk Notes: ${x.riskNotes.join('; ')||'N/A'}\nDecision: ${x.decisionSummary}`;
