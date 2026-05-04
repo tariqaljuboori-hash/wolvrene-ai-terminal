@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 
 import type { MarketIntelligence } from "@/lib/market/types";
 
-import { LiquidityMapPanel } from "./LiquidityMapPanel";
 import { MarketStateBadge } from "./MarketStateBadge";
 import { OrderFlowPanel } from "./OrderFlowPanel";
 import { ProviderStatusPanel } from "./ProviderStatusPanel";
