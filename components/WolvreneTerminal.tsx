@@ -3588,6 +3588,9 @@ function orderRoi(order: TradeOrder) {
 
   const aiLiveContext = useMemo<LiveContext>(() => ({
     symbol: selectedSymbol,
+    displayedSymbol: selectedSymbol,
+    normalizedRadarSymbol,
+    exchange: "bitget",
     mode: activeTradeMode,
     timeframe,
     livePrice: livePrice ?? null,
@@ -3672,6 +3675,21 @@ function orderRoi(order: TradeOrder) {
     }),
     [sanitizedBrainPayload]
   );
+  const analystContext = useMemo(() => ({
+    question: aiInput,
+    explanationMode: aiExplanationMode,
+    market: { exchange: "bitget", symbol: selectedSymbol, displayedSymbol: selectedSymbol, normalizedRadarSymbol, timeframe, livePrice, session, stats24h: { high: marketStats.high, low: marketStats.low, volume: marketStats.volume, change: marketStats.change }, funding: marketStats.funding, fundingEta: sessionCountdown },
+    radar: { state: radarGate.radarState, bias: radarGate.radarBias, confidence: marketRadarIntelligence?.confidence ?? null, gateResult: radarGate.radarGateResult, gateReason: radarGate.radarGateReason, source: marketRadarSource },
+    precision: { confidence: marketRadarIntelligence?.confidence ?? aiLiveContext.confidence ?? sanitizedBrainPayload.confidence ?? null, finalSignalMode: radarGate.finalSignalMode, legacySignal: radarGate.legacySignal, entry: sanitizedBrainPayload.entry, sl: sanitizedBrainPayload.sl, tp1: sanitizedBrainPayload.tp1, tp2: sanitizedBrainPayload.tp2, tp3: sanitizedBrainPayload.tp3, reason: sanitizedBrainPayload.whyDecision || sanitizedBrainPayload.whyNoTrade },
+    triggerChecklist: aiLiveContext.checklist,
+    sniper: aiLiveContext.sniper,
+    activeTrade: activeTradeContext,
+    selectedTrade: selectedTradeContext,
+    selectedSignal: (aiLiveContext.signalFeed as { selected?: unknown } | undefined)?.selected ?? null,
+    signalFeed: (aiLiveContext.signalFeed as { latestRows?: unknown[] } | undefined)?.latestRows ?? [],
+    chartSnapshot: aiLiveContext.chartSnapshot,
+    availableDataFlags: aiLiveContext.aiPayloadDebug ?? {},
+  }), [aiInput, aiExplanationMode, selectedSymbol, normalizedRadarSymbol, timeframe, livePrice, session, marketStats.high, marketStats.low, marketStats.volume, marketStats.change, marketStats.funding, sessionCountdown, radarGate, marketRadarIntelligence?.confidence, marketRadarSource, aiLiveContext, sanitizedBrainPayload, activeTradeContext, selectedTradeContext]);
 
   function inferUserTradingIntent(question: string): AIIntent {
     const text = question.toLowerCase();
@@ -3688,8 +3706,8 @@ function orderRoi(order: TradeOrder) {
     const hasSelectedTrade = Boolean(selectedTradeContext.side && selectedTradeContext.entry !== null);
     const tradeStatus = hasSelectedTrade
       ? `${selectedTradeContext.side} | Entry ${selectedTradeContext.entry} | Mark ${selectedTradeContext.markPrice ?? "N/A"} | PnL ${selectedTradeContext.pnlUsd ?? "N/A"} (${selectedTradeContext.pnlPct ?? "N/A"}%) | SL ${selectedTradeContext.sl ?? "N/A"} | TP1 ${selectedTradeContext.tp1 ?? "N/A"}`
-      : "No selected trade context.";
-    const riskLine = `${sanitizedBrainPayload.risk} | ${sanitizedBrainPayload.riskReason} | Trap ${sanitizedBrainPayload.institutionalContext.trapRisk}%`;
+      : "No active trade is open. Current state is waiting / watching.";
+    const riskLine = `${sanitizedBrainPayload.risk} | ${sanitizedBrainPayload.riskReason}`;
     const watchLine = structured.reasoning.filter(Boolean).slice(0, 2).join(" | ") || sanitizedBrainPayload.nextConfirmation;
     let safeSummary = structured.summary;
     if (safeSummary.trim().startsWith("{")) {
@@ -3703,12 +3721,14 @@ function orderRoi(order: TradeOrder) {
     return [
       `Current Read: ${safeSummary}`,
       "",
+      `Execution Status: ${selectedTradeContext.status || sanitizedBrainPayload.phase}`,
       `Trade Status: ${tradeStatus}`,
       "",
       `Risk: ${riskLine}`,
       "",
-      `What To Watch: ${watchLine}`,
+      `Why: ${watchLine}`,
       "",
+      `Best Entry Plan: Entry ${sanitizedBrainPayload.entry ?? "N/A"} | SL ${sanitizedBrainPayload.sl ?? "N/A"} | TP1 ${sanitizedBrainPayload.tp1 ?? "N/A"} | TP2 ${sanitizedBrainPayload.tp2 ?? "N/A"} | TP3 ${sanitizedBrainPayload.tp3 ?? "N/A"}`,
       `Decision / Management: ${structured.decision} | ${managementPlaybook.action} (${managementPlaybook.reason})`,
       `Invalidation: ${structured.invalidation || sanitizedBrainPayload.invalidationReason}`,
       `Market Snapshot: ${marketRead} | Confidence ${sanitizedBrainPayload.confidence}%`,
@@ -3749,6 +3769,24 @@ function orderRoi(order: TradeOrder) {
     setAiThinking(true);
 
     try {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("AI_REQUEST_PAYLOAD_DEBUG", {
+          hasLiveContext: Boolean(aiLiveContext),
+          hasChartSnapshot: Boolean(aiLiveContext?.chartSnapshot),
+          candleCount: Number((aiLiveContext?.chartSnapshot as { candleCount?: number } | undefined)?.candleCount || 0),
+          radarState: (aiLiveContext?.marketRadar as { state?: string } | undefined)?.state ?? null,
+          radarBias: (aiLiveContext?.marketRadar as { bias?: string } | undefined)?.bias ?? null,
+          radarConfidence: (aiLiveContext?.marketRadar as { confidence?: number } | undefined)?.confidence ?? null,
+          hasChecklist: Boolean(aiLiveContext?.checklist),
+          hasSniper: Boolean(aiLiveContext?.sniper),
+          hasActiveTrade: Boolean(activeTradeContext?.side),
+          hasSelectedTrade: Boolean(selectedTradeContext?.side),
+          hasSelectedSignal: Boolean((aiLiveContext?.signalFeed as { selected?: unknown } | undefined)?.selected),
+          hasSignalFeed: Boolean((aiLiveContext?.signalFeed as { latestRows?: unknown[] } | undefined)?.latestRows?.length),
+          intent,
+          question,
+        });
+      }
       const history = aiMessages.map((m) => ({ role: m.role, text: m.text }));
       const aiResult = await askWolvreneAICore({
         question,
@@ -3759,6 +3797,7 @@ function orderRoi(order: TradeOrder) {
         liveContext: aiLiveContext,
         signalContext,
         riskContext,
+        analystContext,
         managementPlaybook,
         mode: aiExplanationMode,
         requestId,
@@ -3808,11 +3847,11 @@ function orderRoi(order: TradeOrder) {
 
   function runAIQuickAction(action: "analyze" | "entry" | "risk" | "manage" | "session") {
     const actionPrompts: Record<"analyze" | "entry" | "risk" | "manage" | "session", string> = {
-      analyze: "Analyze BTC now using current dashboard context.",
-      entry: "Best entry?",
-      risk: "Risk check",
-      manage: "Manage this trade",
-      session: "Session outlook",
+      analyze: "Analyze the current market using live terminal context.",
+      entry: "What is the best entry plan right now? Is execution allowed, waiting, blocked, or sniper watch?",
+      risk: "Check current risk, invalidation, and whether entry is safe.",
+      manage: "Manage the active trade if one exists. If none exists, explain what to monitor.",
+      session: "Analyze current session quality and what setups are preferred.",
     };
     sendAIMessage(actionPrompts[action]);
   }
@@ -6049,7 +6088,7 @@ function orderRoi(order: TradeOrder) {
                               <span className="h-2 w-2 animate-pulse rounded-full bg-yellow-500" />
                               <p className="text-sm text-yellow-400 font-bold">WOLVRENE AI is processing sanitized UnifiedWolvreneBrain context...</p>
                             </div>
-                            <p className="mt-2 text-xs text-gray-500">AI reads sanitized brain payload + selected trade context + live context (no raw candles or indicator internals).</p>
+                            <p className="mt-2 text-xs text-gray-500">AI reads unified brain payload + selected signal/trade context + live market/radar state + chart snapshot.</p>
                           </div>
                         )}
 
@@ -6269,7 +6308,7 @@ function orderRoi(order: TradeOrder) {
 
                   <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                     <p className="text-xs text-yellow-500 mb-2">AI Bridge Status: {aiBridgeStatus.toUpperCase()}</p>
-                    <p className="text-xs leading-5 text-gray-400">AI reads sanitized UnifiedWolvreneBrain payload plus selected-trade/live context with intent guard + rate protection. No raw candles or indicator internals are sent.</p>
+                    <p className="text-xs leading-5 text-gray-400">AI reads unified terminal context (brain, radar, signal feed, selected trade, active trade, and chart snapshot) with intent guard + rate protection.</p>
                   </div>
                 </div>
               </div>

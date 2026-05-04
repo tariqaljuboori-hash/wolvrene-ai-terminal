@@ -74,7 +74,51 @@ export async function POST(req: NextRequest) {
 
     const prompt = String(body?.prompt || "").trim();
     const mode = String(body?.mode || "Trader");
+    const explanationMode = String(body?.explanationMode || mode || "Trader");
     const messages = Array.isArray(body?.messages) ? body.messages.slice(-8) : [];
+    const signalContext = (body?.signalContext || aiPayload?.signalContext || {}) as AIContext;
+    const riskContext = (body?.riskContext || aiPayload?.riskContext || {}) as AIContext;
+    const analystContext =
+      body?.analystContext ??
+      aiPayload?.analystContext ??
+      {};
+
+    const mergedLiveContext = {
+      ...liveContext,
+      marketStats: liveContext?.marketStats || context?.marketStats || {},
+      marketRadar: liveContext?.marketRadar || context?.marketRadar || {},
+      chartSnapshot: liveContext?.chartSnapshot || context?.chartSnapshot || {},
+      signalFeed: liveContext?.signalFeed || context?.signalFeed || {},
+      checklist: liveContext?.checklist || context?.checklist || {},
+      sniper: liveContext?.sniper || context?.sniper || {},
+      aiPayloadDebug: liveContext?.aiPayloadDebug || context?.aiPayloadDebug || {},
+    } as AIContext;
+
+    const radarConfidence =
+      Number((mergedLiveContext?.marketRadar as AIContext)?.confidence) ||
+      Number(mergedLiveContext?.confidence) ||
+      Number((payload as AIContext)?.confidence) ||
+      0;
+    (mergedLiveContext as AIContext).finalConfidenceUsed = radarConfidence;
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log("AI_ROUTE_RECEIVED_CONTEXT", {
+        hasLiveContext: Boolean(mergedLiveContext),
+        hasChartSnapshot: Boolean((mergedLiveContext as AIContext)?.chartSnapshot),
+        candleCount: Number((((mergedLiveContext as AIContext)?.chartSnapshot as AIContext)?.candleCount as number) || 0),
+        radarState: ((mergedLiveContext as AIContext)?.marketRadar as AIContext)?.state ?? null,
+        radarBias: ((mergedLiveContext as AIContext)?.marketRadar as AIContext)?.bias ?? null,
+        radarConfidence,
+        hasChecklist: Boolean((mergedLiveContext as AIContext)?.checklist),
+        hasSniper: Boolean((mergedLiveContext as AIContext)?.sniper),
+        hasActiveTrade: Boolean((activeTradeContext as AIContext)?.side),
+        hasSelectedTrade: Boolean((selectedTradeContext as AIContext)?.side),
+        hasSelectedSignal: Boolean(((mergedLiveContext as AIContext)?.signalFeed as AIContext)?.selected),
+        hasSignalFeed: Boolean((((mergedLiveContext as AIContext)?.signalFeed as AIContext)?.latestRows as unknown[] | undefined)?.length),
+        intent,
+        question,
+      });
+    }
 
     if (!question) {
       return NextResponse.json(
@@ -84,10 +128,10 @@ export async function POST(req: NextRequest) {
     }
 
     const systemPrompt = `
-You are WOLVRENE AI, a professional trading-analysis assistant embedded inside the user's private trading dashboard.
-You must analyze ONLY the provided live dashboard context. Do not pretend you can see anything not supplied.
-You are not a financial advisor. Keep responses educational and risk-focused.
-Style: direct, sharp, professional, Wolvrene tone. No hype, no guaranteed profits.
+You are Wolvrene Live Market Analyst inside the private trading terminal.
+You are not a canned response bot.
+You must answer the user's exact question first, then add the most relevant market analysis from live context.
+Never invent entry, SL, TP, invalidation, confidence, or execution permission.
 
 Decision rules:
 - Always mention timeframe, session, bias, and current mark if provided.
@@ -100,13 +144,16 @@ Decision rules:
 - For open positions, focus on risk management: SL, TP, partials, breakeven, invalidation.
 - Avoid overlong answers unless asked.
 
-You are WOLVRENE Institutional Desk.
-Use only provided sanitized UnifiedWolvreneBrain payload.
-No invented entries, SL, TP, confidence, direction, or strategy.
-Never promise profit. Never use hype.
-
 Return a clear structured answer with:
 summary, reasoning, decision, nextAction, warnings, invalidation, confidenceNote.
+For market/entry/custom analysis include Opportunity Map:
+- Strong Zones
+- Best Long Area
+- Best Short Area
+- Sniper Watch
+- No-Trade Zone
+- Next Trigger
+If confidence is missing across all fields, say: "Confidence unavailable from current context."
 
 Answer according to provided intent. Do not use one generic response for all actions.
 If intent is MANAGE_TRADE or RISK_CHECK and selected trade context exists, response must be trade-specific.
@@ -128,7 +175,7 @@ LIVE DASHBOARD CONTEXT:
 ${trimJson(context)}
 
 EXPLANATION MODE:
-${mode}
+${explanationMode}
 
 RECENT AI CHAT HISTORY:
 ${trimJson(history, 5000)}
@@ -142,6 +189,9 @@ ${trimJson(payload)}
 AI PAYLOAD:
 ${trimJson(aiPayload, 9000)}
 
+ANALYST CONTEXT:
+${trimJson(analystContext, 9000)}
+
 SELECTED TRADE CONTEXT:
 ${trimJson(selectedTradeContext, 6000)}
 
@@ -149,7 +199,13 @@ ACTIVE TRADE CONTEXT:
 ${trimJson(activeTradeContext, 6000)}
 
 LIVE CONTEXT:
-${trimJson(liveContext, 6000)}
+${trimJson(mergedLiveContext, 9000)}
+
+SIGNAL CONTEXT:
+${trimJson(signalContext, 4000)}
+
+RISK CONTEXT:
+${trimJson(riskContext, 4000)}
 
 PRE-BUILT PROMPT:
 ${prompt || "N/A"}
