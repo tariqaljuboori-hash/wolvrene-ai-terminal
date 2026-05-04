@@ -15,6 +15,7 @@ type AskInput = {
   mode: ExplanationMode;
   requestId: number;
   history: Array<{ role: "user" | "assistant"; text: string }>;
+  analystContext?: Record<string, unknown>;
 };
 
 const requestCache = new Map<string, WolvreneStructuredResponse>();

@@ -3675,6 +3675,21 @@ function orderRoi(order: TradeOrder) {
     }),
     [sanitizedBrainPayload]
   );
+  const analystContext = useMemo(() => ({
+    question: aiInput,
+    explanationMode: aiExplanationMode,
+    market: { exchange: "bitget", symbol: selectedSymbol, displayedSymbol: selectedSymbol, normalizedRadarSymbol, timeframe, livePrice, session, stats24h: { high: marketStats.high, low: marketStats.low, volume: marketStats.volume, change: marketStats.change }, funding: marketStats.funding, fundingEta: sessionCountdown },
+    radar: { state: radarGate.radarState, bias: radarGate.radarBias, confidence: marketRadarIntelligence?.confidence ?? null, gateResult: radarGate.radarGateResult, gateReason: radarGate.radarGateReason, source: marketRadarSource },
+    precision: { confidence: marketRadarIntelligence?.confidence ?? aiLiveContext.confidence ?? sanitizedBrainPayload.confidence ?? null, finalSignalMode: radarGate.finalSignalMode, legacySignal: radarGate.legacySignal, entry: sanitizedBrainPayload.entry, sl: sanitizedBrainPayload.sl, tp1: sanitizedBrainPayload.tp1, tp2: sanitizedBrainPayload.tp2, tp3: sanitizedBrainPayload.tp3, reason: sanitizedBrainPayload.whyDecision || sanitizedBrainPayload.whyNoTrade },
+    triggerChecklist: aiLiveContext.checklist,
+    sniper: aiLiveContext.sniper,
+    activeTrade: activeTradeContext,
+    selectedTrade: selectedTradeContext,
+    selectedSignal: (aiLiveContext.signalFeed as { selected?: unknown } | undefined)?.selected ?? null,
+    signalFeed: (aiLiveContext.signalFeed as { latestRows?: unknown[] } | undefined)?.latestRows ?? [],
+    chartSnapshot: aiLiveContext.chartSnapshot,
+    availableDataFlags: aiLiveContext.aiPayloadDebug ?? {},
+  }), [aiInput, aiExplanationMode, selectedSymbol, normalizedRadarSymbol, timeframe, livePrice, session, marketStats.high, marketStats.low, marketStats.volume, marketStats.change, marketStats.funding, sessionCountdown, radarGate, marketRadarIntelligence?.confidence, marketRadarSource, aiLiveContext, sanitizedBrainPayload, activeTradeContext, selectedTradeContext]);
 
   function inferUserTradingIntent(question: string): AIIntent {
     const text = question.toLowerCase();
@@ -3778,6 +3793,7 @@ function orderRoi(order: TradeOrder) {
         liveContext: aiLiveContext,
         signalContext,
         riskContext,
+        analystContext,
         managementPlaybook,
         mode: aiExplanationMode,
         requestId,
@@ -3827,11 +3843,11 @@ function orderRoi(order: TradeOrder) {
 
   function runAIQuickAction(action: "analyze" | "entry" | "risk" | "manage" | "session") {
     const actionPrompts: Record<"analyze" | "entry" | "risk" | "manage" | "session", string> = {
-      analyze: "Analyze BTC now using current dashboard context.",
-      entry: "Best entry?",
-      risk: "Risk check",
-      manage: "Manage this trade",
-      session: "Session outlook",
+      analyze: "Analyze the current market using live terminal context.",
+      entry: "What is the best entry plan right now? Is execution allowed, waiting, blocked, or sniper watch?",
+      risk: "Check current risk, invalidation, and whether entry is safe.",
+      manage: "Manage the active trade if one exists. If none exists, explain what to monitor.",
+      session: "Analyze current session quality and what setups are preferred.",
     };
     sendAIMessage(actionPrompts[action]);
   }

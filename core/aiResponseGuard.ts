@@ -132,7 +132,7 @@ function normalizeRawResponse(raw: string, payload: SanitizedBrainPayload): Wolv
   }
   const fallbackReasoning = buildFallbackReasoning(payload);
   return {
-    summary: trimmed.replace(/^\{+/, "").slice(0, 220) || "Brain-aligned explanation generated.",
+    summary: trimmed.replace(/^\{+/, "").slice(0, 220) || "Live context analyzed with current Wolvrene state.",
     reasoning: fallbackReasoning,
     scenarios: buildScenarioLines(payload),
     decision: payload.phase,
