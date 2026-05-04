@@ -79,6 +79,7 @@ export type LiveContext = {
   ordersCount: number;
   alertsCount: number;
   candleTrend: string;
+  [key: string]: unknown;
 };
 
 export type AICommandPayload = {

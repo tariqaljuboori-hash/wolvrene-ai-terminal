@@ -1,0 +1,2 @@
+import type { Candle, VolumeProfile } from "../types";
+export function buildVolumeProfile(candles:Candle[]):VolumeProfile{const withV=candles.filter(c=>c.volume!=null);if(!withV.length) return {poc:null,hvn:[],lvn:[]};const top=[...withV].sort((a,b)=>(b.volume||0)-(a.volume||0)).slice(0,3);const bot=[...withV].sort((a,b)=>(a.volume||0)-(b.volume||0)).slice(0,3);return {poc:top[0]?.close??null,hvn:top.map((c,i)=>({price:c.close,volume:c.volume||0,type:i===0?'POC':'HVN',strength:80-i*10})),lvn:bot.map(c=>({price:c.close,volume:c.volume||0,type:'LVN',strength:55}))};}
