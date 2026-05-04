@@ -78,7 +78,6 @@ export async function POST(req: NextRequest) {
     const messages = Array.isArray(body?.messages) ? body.messages.slice(-8) : [];
     const signalContext = (body?.signalContext || aiPayload?.signalContext || {}) as AIContext;
     const riskContext = (body?.riskContext || aiPayload?.riskContext || {}) as AIContext;
-    const analystContext = (body?.analystContext || {}) as AIContext;
 
     const mergedLiveContext = {
       ...liveContext,
@@ -109,11 +108,7 @@ export async function POST(req: NextRequest) {
         hasChecklist: Boolean((mergedLiveContext as AIContext)?.checklist),
         hasSniper: Boolean((mergedLiveContext as AIContext)?.sniper),
         hasActiveTrade: Boolean((activeTradeContext as AIContext)?.side),
-        hasSelectedTrade: Boolean((selectedTradeContext as AIContext)?.side),
         hasSelectedSignal: Boolean(((mergedLiveContext as AIContext)?.signalFeed as AIContext)?.selected),
-        hasSignalFeed: Boolean((((mergedLiveContext as AIContext)?.signalFeed as AIContext)?.latestRows as unknown[] | undefined)?.length),
-        intent,
-        question,
       });
     }
 

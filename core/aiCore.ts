@@ -68,7 +68,6 @@ export async function askWolvreneAICore(input: AskInput): Promise<{ structured: 
         liveContext: input.liveContext,
         signalContext: input.signalContext,
         riskContext: input.riskContext,
-        analystContext: input.analystContext || null,
         mode: input.mode,
         messages: input.history.slice(-10),
       }),

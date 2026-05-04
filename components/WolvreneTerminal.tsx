@@ -3586,20 +3586,7 @@ function orderRoi(order: TradeOrder) {
     radarGateDecision: radarGate.radarGateResult, finalSignalMode: radarGate.finalSignalMode, legacySignal: radarGate.legacySignal
   }) : { state: 'DATA_UNAVAILABLE', message: 'radar data is unavailable', radarGateDecision: radarGate.radarGateResult, finalSignalMode: radarGate.finalSignalMode, legacySignal: radarGate.legacySignal }, [marketRadarIntelligence, radarGate.radarGateResult, radarGate.finalSignalMode, radarGate.legacySignal]);
 
-  const aiLiveContext = useMemo<LiveContext>(() => {
-    const lastCandles = recentCandles.slice(-50);
-    const closes = lastCandles.map((c) => c.close);
-    const highs = lastCandles.map((c) => c.high);
-    const lows = lastCandles.map((c) => c.low);
-    const rangeHigh = highs.length ? Math.max(...highs) : null;
-    const rangeLow = lows.length ? Math.min(...lows) : null;
-    const lastClose = closes.at(-1) ?? null;
-    const prevClose = closes.at(-2) ?? null;
-    const rangePosition = livePrice != null && rangeHigh != null && rangeLow != null && rangeHigh !== rangeLow
-      ? Math.max(0, Math.min(1, (livePrice - rangeLow) / (rangeHigh - rangeLow)))
-      : null;
-    const selectedRow = signalFeedRows.find((r) => r.id === selectedSignalId) ?? null;
-    return ({
+  const aiLiveContext = useMemo<LiveContext>(() => ({
     symbol: selectedSymbol,
     displayedSymbol: selectedSymbol,
     normalizedRadarSymbol,
@@ -3618,50 +3605,7 @@ function orderRoi(order: TradeOrder) {
     alertsCount: alerts.length,
     candleTrend: candlesSummary.trend,
     marketRadar: marketRadarForAI,
-    marketStats: {
-      high: marketStats.high, low: marketStats.low, volume: marketStats.volume, change: marketStats.change, funding: marketStats.funding, fundingEta: sessionCountdown,
-    },
-    signalFeed: {
-      latestRows: signalFeedRows.slice(0, 10),
-      selected: selectedRow,
-    },
-    chartSnapshot: {
-      candleCount: lastCandles.length,
-      candles: lastCandles.map((c) => ({ t: c.time, o: c.open, h: c.high, l: c.low, c: c.close, v: (c as { volume?: number }).volume ?? null })),
-      lastClose,
-      previousClose: prevClose,
-      rangeHigh,
-      rangeLow,
-      rangePosition,
-    },
-    checklist: {
-      structure: structureState.event || "WAITING",
-      liquidity: liquidityState.trapDirection || "WAITING",
-      volume: candlesSummary.volatility || "WAITING",
-      trigger: triggerValidation.quality || "WAITING",
-      rr: signalPlan.risk || "WAITING",
-      session: sessionSniper.mode,
-    },
-    sniper: {
-      state: sessionSniper.mode,
-      quality: sessionSniper.quality,
-      reason: sessionSniper.reason,
-      executable: eliteSignalAllowed,
-    },
-    aiPayloadDebug: process.env.NODE_ENV !== "production" ? {
-      hasActiveTrade: Boolean(activeExecutionTradeView),
-      hasSelectedSignal: Boolean(selectedRow),
-      hasCandles: lastCandles.length > 0,
-      candleCount: lastCandles.length,
-      radarState: radarGate.radarState,
-      radarBias: radarGate.radarBias,
-      finalSignalMode: radarGate.finalSignalMode,
-      triggerStatus: triggerValidation.quality || "WAITING",
-      sniperState: sessionSniper.mode,
-      activeTradeStatus: activeExecutionTradeView?.status ?? "NO_ACTIVE_TRADE",
-      payloadTimestamp: Date.now(),
-    } : undefined,
-  })}, [recentCandles, signalFeedRows, selectedSignalId, selectedSymbol, normalizedRadarSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, brain.marketRegime, candlesSummary.trend, marketStats.high, marketStats.low, marketStats.volume, marketStats.change, marketStats.funding, sessionCountdown, orders.length, alerts.length, marketRadarForAI, structureState.event, liquidityState.trapDirection, triggerValidation.quality, signalPlan.risk, sessionSniper.mode, sessionSniper.quality, sessionSniper.reason, eliteSignalAllowed, activeExecutionTradeView, radarGate.radarState, radarGate.radarBias, radarGate.finalSignalMode]);
+  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, marketStats.volume, brain.marketRegime, candlesSummary.trend, marketStats.funding, orders.length, alerts.length, marketRadarForAI]);
 
   const activeTradeContext = useMemo<SelectedTradeContext>(() => {
     if (activeExecutionTradeView) {
@@ -3836,11 +3780,7 @@ function orderRoi(order: TradeOrder) {
           hasChecklist: Boolean(aiLiveContext?.checklist),
           hasSniper: Boolean(aiLiveContext?.sniper),
           hasActiveTrade: Boolean(activeTradeContext?.side),
-          hasSelectedTrade: Boolean(selectedTradeContext?.side),
           hasSelectedSignal: Boolean((aiLiveContext?.signalFeed as { selected?: unknown } | undefined)?.selected),
-          hasSignalFeed: Boolean((aiLiveContext?.signalFeed as { latestRows?: unknown[] } | undefined)?.latestRows?.length),
-          intent,
-          question,
         });
       }
       const history = aiMessages.map((m) => ({ role: m.role, text: m.text }));
