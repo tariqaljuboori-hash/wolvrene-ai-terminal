@@ -1,0 +1,1 @@
+export async function sendDiscordAlert(message:string){const u=process.env.DISCORD_WEBHOOK_URL;if(!u)return {status:'unavailable'};await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content:message})});return {status:'sent'};}
