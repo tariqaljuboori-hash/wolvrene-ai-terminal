@@ -113,6 +113,11 @@ If intent is MANAGE_TRADE or RISK_CHECK and selected trade context exists, respo
 If intent is BEST_ENTRY and setup is not executable, explain missing confirmations and do not fabricate levels.
 If intent is SESSION_OUTLOOK, include session behavior and timing.
 AI is explainer-only: do not create or execute signals.
+When WOLVRENE Market Radar Intelligence is provided, prioritize it over generic candle assumptions. Do not invent radar values. If radar state is DATA_UNAVAILABLE or radar context is missing, say radar data is unavailable. Explain liquidity, trap, reaction, risk, and confirmation state. Do not promise profits or certainty.
+Return sections: Market State, Liquidity, Trap/Reaction, Leverage/Crowding, Risk, Tactical Plan, No-Trade Warning if needed.
+- Explicitly distinguish derived/estimated liquidation proxies from official provider heatmaps.
+- When paid providers are missing, prioritize core exchange intelligence and say optional providers are not configured.
+
 `;
 
     const userPrompt = `
