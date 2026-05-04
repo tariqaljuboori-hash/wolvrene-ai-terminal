@@ -4977,22 +4977,6 @@ function orderRoi(order: TradeOrder) {
                   </div>
                 </div>
 
-                <div className="mb-4 grid gap-3 md:grid-cols-6">
-                  {[
-                    ["24H High", `$${marketStats.high}`],
-                    ["24H Low", `$${marketStats.low}`],
-                    ["24H Volume", marketStats.volume],
-                    ["24H Change", marketStats.change],
-                    ["Funding", marketStats.funding],
-                    ["Funding ETA", sessionCountdown],
-                  ].map(([label, value]) => (
-                    <div key={label} className={`${card} p-4`}>
-                      <p className="text-[11px] text-gray-500 uppercase tracking-wider">{label}</p>
-                      <p className="text-lg font-bold mt-1">{value}</p>
-                    </div>
-                  ))}
-                </div>
-
                 <div className="hidden">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-sm font-bold text-gray-300">Signal Feed</h3>
