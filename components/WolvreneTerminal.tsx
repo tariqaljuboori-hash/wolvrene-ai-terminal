@@ -5269,7 +5269,7 @@ function orderRoi(order: TradeOrder) {
               >
                 <div ref={chartRef} className="h-[560px] w-full min-w-0 xl:h-[590px]" />
 
-                <SmartFibOverlay context={smartFibContext} chartContainer={chartRef.current} />
+                <SmartFibOverlay context={smartFibContext} chartApi={chartApiRef.current} candleSeries={candleSeriesRef.current} />
 
                 <div className="absolute left-4 bottom-4 z-40 w-[280px] rounded-2xl border border-green-500/20 bg-black/70 p-3 text-[11px] text-gray-200 shadow-[0_0_24px_rgba(0,0,0,0.55)]">
                   <div className="flex items-center justify-between gap-2">
