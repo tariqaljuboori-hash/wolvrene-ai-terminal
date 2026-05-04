@@ -3754,6 +3754,20 @@ function orderRoi(order: TradeOrder) {
     setAiThinking(true);
 
     try {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("AI_REQUEST_PAYLOAD_DEBUG", {
+          hasLiveContext: Boolean(aiLiveContext),
+          hasChartSnapshot: Boolean(aiLiveContext?.chartSnapshot),
+          candleCount: Number((aiLiveContext?.chartSnapshot as { candleCount?: number } | undefined)?.candleCount || 0),
+          radarState: (aiLiveContext?.marketRadar as { state?: string } | undefined)?.state ?? null,
+          radarBias: (aiLiveContext?.marketRadar as { bias?: string } | undefined)?.bias ?? null,
+          radarConfidence: (aiLiveContext?.marketRadar as { confidence?: number } | undefined)?.confidence ?? null,
+          hasChecklist: Boolean(aiLiveContext?.checklist),
+          hasSniper: Boolean(aiLiveContext?.sniper),
+          hasActiveTrade: Boolean(activeTradeContext?.side),
+          hasSelectedSignal: Boolean((aiLiveContext?.signalFeed as { selected?: unknown } | undefined)?.selected),
+        });
+      }
       const history = aiMessages.map((m) => ({ role: m.role, text: m.text }));
       const aiResult = await askWolvreneAICore({
         question,
