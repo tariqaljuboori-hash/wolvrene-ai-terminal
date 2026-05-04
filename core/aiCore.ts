@@ -15,6 +15,7 @@ type AskInput = {
   mode: ExplanationMode;
   requestId: number;
   history: Array<{ role: "user" | "assistant"; text: string }>;
+  analystContext?: Record<string, unknown>;
 };
 
 const requestCache = new Map<string, WolvreneStructuredResponse>();
@@ -55,15 +56,19 @@ export async function askWolvreneAICore(input: AskInput): Promise<{ structured: 
   const res = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+      body: JSON.stringify({
         question: input.question,
         prompt,
         payload: input.payload,
         aiPayload,
         intent: input.intent,
+        explanationMode: input.mode,
         selectedTradeContext: input.selectedTradeContext,
         activeTradeContext: input.activeTradeContext,
         liveContext: input.liveContext,
+        signalContext: input.signalContext,
+        riskContext: input.riskContext,
+        analystContext: input.analystContext || null,
         mode: input.mode,
         messages: input.history.slice(-10),
       }),

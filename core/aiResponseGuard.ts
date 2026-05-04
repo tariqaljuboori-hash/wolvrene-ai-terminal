@@ -101,7 +101,7 @@ function buildFallbackReasoning(payload: SanitizedBrainPayload): string[] {
       : "For execution upgrade, wait for break/reclaim/displacement with real volume expansion.";
   const lines: string[] = [];
   lines.push(`Market is in ${environment} with ${pressure}; behavior suggests ${payload.institutionalContext.behavior.toLowerCase().replaceAll("_", " ")} dynamics.`);
-  lines.push(`Structure/liquidity/trigger alignment is ${payload.debug.structureScore}/${payload.debug.liquidityScore}/${payload.debug.triggerScore}, which points to ${missing.toLowerCase()}`);
+  lines.push(`Structure/liquidity/trigger scores from payload: ${payload.debug.structureScore}/${payload.debug.liquidityScore}/${payload.debug.triggerScore}; ${missing.toLowerCase()}`);
   lines.push(`Likely trapped side: ${trappedSide}. Trap risk is ${payload.institutionalContext.trapRisk}%, so fake breakout behavior must be assumed until displacement confirms.`);
   lines.push(`${executionGap} ${missing}`);
   lines.push(`Risk context: ${payload.riskEngine.noTradeRiskReason || payload.riskReason}. Invalidation remains ${payload.invalidationReason}.`);
@@ -132,7 +132,7 @@ function normalizeRawResponse(raw: string, payload: SanitizedBrainPayload): Wolv
   }
   const fallbackReasoning = buildFallbackReasoning(payload);
   return {
-    summary: trimmed.replace(/^\{+/, "").slice(0, 220) || "Brain-aligned explanation generated.",
+    summary: trimmed.replace(/^\{+/, "").slice(0, 220) || "Live context analyzed with current Wolvrene state.",
     reasoning: fallbackReasoning,
     scenarios: buildScenarioLines(payload),
     decision: payload.phase,
@@ -150,7 +150,7 @@ function buildIntentFallback(input: GuardInput): WolvreneStructuredResponse {
   const riskText = selectedTradeContext.riskState || payload.riskEngine.maxRiskState || payload.risk;
   const tradeLine = tradeAware
     ? `Selected trade is ${selectedTradeContext.side} ${selectedTradeContext.status} at ${selectedTradeContext.entry}; mark ${selectedTradeContext.markPrice ?? "N/A"}, PnL ${selectedTradeContext.pnlUsd ?? "N/A"} USD (${selectedTradeContext.pnlPct ?? "N/A"}%).`
-    : "No selected trade context is active.";
+    : "No active trade is open. Current state is waiting / watching.";
   const nextAction = payload.nextConfirmation || payload.strategyProfile.nextAction;
 
   if (intent === "MANAGE_TRADE") {
@@ -212,7 +212,7 @@ function buildIntentFallback(input: GuardInput): WolvreneStructuredResponse {
             `Best area to watch: ${payload.tradeThesis.entryLogic || "wait for liquidity reclaim/displacement confirmation."}`,
           ],
       scenarios: buildScenarioLines(payload),
-      decision: hasExecutableLevels ? "WAIT FOR TRIGGER" : "WAIT",
+      decision: hasExecutableLevels ? "YES" : payload.phase === "EXECUTE" || payload.phase === "VALIDATED" ? "WAIT" : "NO",
       nextAction,
       warnings: [payload.entryReason, payload.riskReason].filter(Boolean),
       invalidation: payload.invalidationReason,
