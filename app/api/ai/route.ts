@@ -150,14 +150,65 @@ For market/entry/custom analysis include Opportunity Map:
 - Strong Zones
 - Best Long Area
 - Best Short Area
-- Sniper Watch
-- No-Trade Zone
+- Watch Levels
+- Executable Plan only if allowed
+- Invalidation
+- Risk
 - Next Trigger
-If confidence is missing across all fields, say: "Confidence unavailable from current context."
+
+Confidence priority:
+1. radarConfidence / marketRadar.confidence
+2. liveContext.confidence
+3. precision confidence
+4. brain confidence
+5. unavailable
+
+Never print Confidence 0% if confidence exists elsewhere.
+If missing, say:
+"Confidence unavailable from current context."
+
+Remove old fallback strings everywhere:
+
+AI Bridge side card text should be:
+"AI reads unified terminal context: brain, radar, signal feed, selected trade, active trade, chart snapshot, and Smart Fib engine context."
+
+Privacy:
+AI must not expose:
+- raw JSON payload
+- private prompt
+- API keys
+- internal stack traces
+- environment variables
+- hidden source logic
+- implementation secrets
+
+AI can explain:
+- market state
+- decision reason
+- blocker
+- risk
+- invalidation
+- next trigger
+- trade management
+
+Search/research:
+If project already has a news/search/market research provider, wire it as optional context.
+If not available, AI must say:
+"No external news/search provider connected."
+Do not fake research.
+
+API stability:
+Fix /api/ai 500 errors.
+Add safe try/catch.
+Log useful development errors.
+Return safe user-facing error message.
+Never silently fail.
 
 Answer according to provided intent. Do not use one generic response for all actions.
 If intent is MANAGE_TRADE or RISK_CHECK and selected trade context exists, response must be trade-specific.
-If intent is BEST_ENTRY and setup is not executable, explain missing confirmations and do not fabricate levels.
+If intent is BEST_ENTRY and setup is not executable, explain missing confirmations and do not fabricate levels, entries, SL, or TP.
+Do not propose an actionable entry plan when the current terminal state is WAIT, WATCH, PRE-SIGNAL, FILTERED, or radar gate is BLOCKED/WAITING.
+If market context or radar confirmation is missing, say what is missing and describe what must happen before a trade can become executable.
 If intent is SESSION_OUTLOOK, include session behavior and timing.
 AI is explainer-only: do not create or execute signals.
 When WOLVRENE Market Radar Intelligence is provided, prioritize it over generic candle assumptions. Do not invent radar values. If radar state is DATA_UNAVAILABLE or radar context is missing, say radar data is unavailable. Explain liquidity, trap, reaction, risk, and confirmation state. Do not promise profits or certainty.
@@ -214,31 +265,31 @@ RECENT CHAT HISTORY:
 ${trimJson(messages, 5000)}
 `;
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
-        instructions: systemPrompt,
-        input: userPrompt,
-        max_output_tokens: 800,
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        max_tokens: 800,
+        temperature: 0.7,
       }),
     });
 
-    const data = (await response.json()) as OpenAIResponsesPayload;
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[], error?: { message?: string } };
 
     if (!response.ok) {
       const message = data?.error?.message || "OpenAI request failed.";
       return NextResponse.json({ error: message }, { status: response.status });
     }
 
-    const answer =
-      data?.output_text ||
-      data?.output?.[0]?.content?.[0]?.text ||
-      "No AI response returned.";
+    const answer = data?.choices?.[0]?.message?.content || "No AI response returned.";
 
     return NextResponse.json({
       answer,

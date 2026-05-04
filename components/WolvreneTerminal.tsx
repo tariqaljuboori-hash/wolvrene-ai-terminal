@@ -44,6 +44,14 @@ import type {
   PriceAlert,
   TradeOrder,
 } from "@/types/trading";
+import SmartFibSettingsPanel from "@/components/market/smart-fib/SmartFibSettingsPanel";
+import SmartFibDashboard from "@/components/market/smart-fib/SmartFibDashboard";
+import SmartFibOverlay from "@/components/market/smart-fib/SmartFibOverlay";
+import { SmartFibEngine } from "@/lib/market/engines/smart-fib/SmartFibEngine";
+import type { SmartFibSignal } from "@/lib/market/engines/smart-fib/SmartFibTypes";
+import { SMART_FIB_DEFAULTS } from "@/lib/market/engines/smart-fib/SmartFibDefaults";
+import { buildSmartFibContextBridge } from "@/lib/market/engines/smart-fib/SmartFibContextBridge";
+import type { SmartFibContext } from "@/lib/market/engines/smart-fib/SmartFibTypes";
 
 const defaultSettings: ChartSettings = {
   bullColor: "#ffe629",
@@ -868,7 +876,7 @@ type DecisionSettings = {
 };
 type SignalSubscriptionSettings = {
   timeframes: Record<string, boolean>;
-  modes: Record<"SCALP" | "SWING", boolean>;
+  modes: Record<"SCALP" | "SWING" | "SMART_FIB", boolean>;
   minConfidence: number;
   cooldownSeconds: number;
   maxFeedRows: number;
@@ -912,7 +920,7 @@ const defaultExternalAlertSettings: ExternalAlertSettings = { discordWebhook: ""
 const defaultDecisionSettings: DecisionSettings = { enabled: true, holdBars: 10, executeConfidence: 86, validateConfidence: 72, spawnConfidence: 58, cancelOnOppositeShift: true, showDecisionPanel: true, requireTriggerForExecute: true, proSignalOnly: true };
 const defaultSignalSubscriptionSettings: SignalSubscriptionSettings = {
   timeframes: { "1m": false, "3m": false, "5m": true, "15m": true, "30m": false, "1H": false, "4H": false, "1D": false },
-  modes: { SCALP: true, SWING: true },
+  modes: { SCALP: true, SWING: true, SMART_FIB: true },
   minConfidence: 70,
   cooldownSeconds: 60,
   maxFeedRows: 12,
@@ -931,6 +939,7 @@ type WolvreneUserPrefs = {
   draftLeverage: string;
   terminalTab: "dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro";
   hideUI: boolean;
+  smartFibEnabled: boolean;
 };
 
 function userPrefsKey() { return "wolvrene_user_prefs_v37"; }
@@ -946,6 +955,7 @@ const defaultUserPrefs: WolvreneUserPrefs = {
   draftLeverage: "5",
   terminalTab: "dashboard",
   hideUI: false,
+  smartFibEnabled: false,
 };
 
 const SCALP_TIMEFRAMES = ["1m", "3m", "5m", "15m"] as const;
@@ -985,6 +995,8 @@ export default function WolvreneTerminal() {
     loadJson("wolvreneChartSettings", defaultSettings)
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [smartFibEnabled, setSmartFibEnabled] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).smartFibEnabled || false);
+  const [smartFibSettingsOpen, setSmartFibSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -1004,6 +1016,69 @@ export default function WolvreneTerminal() {
   const [aiBridgeStatus, setAiBridgeStatus] = useState<"ready" | "connected" | "missing_key" | "error">("ready");
   const [aiExplanationMode, setAiExplanationMode] = useState<ExplanationMode>("Trader");
   const [lastValidAIResponse, setLastValidAIResponse] = useState<WolvreneStructuredResponse | null>(null);
+
+  const [recentCandles, setRecentCandles] = useState<Candle[]>([]);
+
+  // Smart Fib state
+  const [smartFibSettings, setSmartFibSettings] = useState(() => ({ ...SMART_FIB_DEFAULTS }));
+  const smartFibEngine = useMemo(() => {
+    const engine = new SmartFibEngine();
+    engine.updateSettings(smartFibSettings);
+    return engine;
+  }, [smartFibSettings]);
+  const [smartFibContext, setSmartFibContext] = useState<SmartFibContext>(() => ({
+    enabled: false,
+    mapState: "WAITING",
+    setupType: "WAITING",
+    activeFibLevels: [],
+    strongestLevels: [],
+    sniperLevels: [],
+    secondGoldLevels: [],
+    activeBoxes: [],
+    entryCandidates: [],
+    dashboardSummary: "Smart Fib Engine initializing...",
+    lastSignals: [],
+  }));
+  const smartFibProcessedUntilRef = useRef<number | null>(null);
+
+  const [smartFibSignals, setSmartFibSignals] = useState<SmartFibSignal[]>([]);
+
+  useEffect(() => {
+    if (smartFibEnabled) {
+      smartFibEngine.enable();
+    } else {
+      smartFibEngine.disable();
+    }
+    smartFibProcessedUntilRef.current = null;
+    setSmartFibSignals([]);
+    setSmartFibContext(smartFibEngine.getContext());
+  }, [smartFibEnabled, smartFibEngine]);
+
+  useEffect(() => {
+    if (!smartFibEnabled || recentCandles.length === 0) {
+      setSmartFibContext(smartFibEngine.getContext());
+      return;
+    }
+
+    const lastProcessedTime = smartFibProcessedUntilRef.current;
+    const pendingCandles = lastProcessedTime === null
+      ? recentCandles
+      : recentCandles.filter((c) => c.time > lastProcessedTime);
+
+    if (pendingCandles.length === 0) {
+      setSmartFibContext(smartFibEngine.getContext());
+      return;
+    }
+
+    const signals = smartFibEngine.processCandles(pendingCandles);
+    smartFibProcessedUntilRef.current = recentCandles[recentCandles.length - 1]?.time ?? lastProcessedTime;
+    setSmartFibContext(smartFibEngine.getContext());
+    setSmartFibSignals((prev) => {
+      const combined = [...prev, ...signals];
+      const deduped = combined.filter((sig, idx, arr) => arr.findIndex((s) => s.id === sig.id) === idx);
+      return deduped.slice(-50);
+    });
+  }, [recentCandles, smartFibEnabled, smartFibEngine]);
 
   const [orders, setOrders] = useState<TradeOrder[]>(() =>
     loadJson("wolvreneOrdersV15", [] as TradeOrder[]).map((order) =>
@@ -1031,7 +1106,6 @@ export default function WolvreneTerminal() {
   const [signalMarkers, setSignalMarkers] = useState<SignalMarker[]>(() =>
     storageGet<SignalMarker[]>(signalMarkersKey(selectedSymbol, timeframe), [])
   );
-  const [recentCandles, setRecentCandles] = useState<Candle[]>([]);
   const [structuredJournal, setStructuredJournal] = useState<StructuredJournalEntry[]>(() =>
     loadJson("wolvreneStructuredJournalV1", [] as StructuredJournalEntry[])
   );
@@ -1828,7 +1902,27 @@ const impulseBoost =
       .filter((row) => signalSubscriptionSettings.modes[row.mode] !== false)
       .filter((row) => row.confidence >= signalSubscriptionSettings.minConfidence)
       .sort((a, b) => (a.id < b.id ? 1 : -1));
-    const dedup = rows.filter(
+
+    const smartFibRows = smartFibSignals.map(sig => ({
+      id: sig.id,
+      time: new Date(sig.timestamp).toLocaleTimeString(),
+      symbol: sig.symbol,
+      timeframe: sig.timeframe,
+      mode: "SMART_FIB" as const,
+      side: sig.side,
+      status: sig.status,
+      confidence: sig.score || 0,
+      reason: sig.reason,
+      radarState: "SMART_FIB",
+      radarGateResult: sig.type,
+      finalSignalSource: "SMART_FIB",
+      gateReason: sig.reason,
+      candleTime: sig.timestamp,
+      executable: sig.executable,
+    }));
+
+    const allRows = [...rows, ...smartFibRows];
+    const dedup = allRows.filter(
       (row, idx, arr) =>
         arr.findIndex(
           (x) =>
@@ -1840,7 +1934,7 @@ const impulseBoost =
         ) === idx
     );
     return dedup.slice(0, signalSubscriptionSettings.maxFeedRows);
-  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade, livePrice, recentCandles.length, signalPlan.state, signalPlan.direction, signalPlan.confidence, radarGate.radarState, radarGate.radarGateResult, radarGate.finalSignalSource, radarGate.radarGateReason]);
+  }, [decisionHistory, selectedSymbol, timeframe, activeTradeMode, signalSubscriptionSettings, activeExecutionTrade, livePrice, recentCandles.length, signalPlan.state, signalPlan.direction, signalPlan.confidence, radarGate.radarState, radarGate.radarGateResult, radarGate.finalSignalSource, radarGate.radarGateReason, smartFibSignals]);
 
   useEffect(() => {
     console.debug("[RadarGate]", {
@@ -2685,9 +2779,9 @@ const impulseBoost =
     if (!hydrated) return;
     storageSet<WolvreneUserPrefs>(userPrefsKey(), {
       selectedSymbol, timeframe, marginMode, orderType, orderSide,
-      draftPrice, draftUsd, draftLeverage, terminalTab, hideUI,
+      draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled,
     });
-  }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI]);
+  }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled]);
 
   useEffect(() => {
     if (!executionPrice || !executionUsd) return;
@@ -3068,6 +3162,17 @@ useEffect(() => {
     addStructuredJournal({ event: "ORDER_CREATED", side, entry: price, note: `${side} ${orderType.toUpperCase()} order created` });
     sendExternalAlert("WOLVRENE ORDER CREATED", `${side} ${orderType.toUpperCase()} at ${formatPrice(price)} · ${notionalUsd.toFixed(2)} USDT · ${leverage}x`);
   }
+
+  const canExecuteSignal =
+    v25FinalBrain.action === "ENTER NOW" &&
+    Boolean(v25FinalBrain.finalDirection) &&
+    (
+      radarGate.finalSignalMode === "RADAR_APPROVED" ||
+      (radarGate.finalSignalMode === "RADAR_VALIDATED" && radarGate.directionAligned)
+    );
+
+  const canExecuteLong = canExecuteSignal && v25FinalBrain.finalDirection === "LONG";
+  const canExecuteShort = canExecuteSignal && v25FinalBrain.finalDirection === "SHORT";
 
   function useSignalPlan() {
     if (!v25FinalBrain.finalDirection || !v25FinalBrain.entry || v25FinalBrain.action !== "ENTER NOW") {
@@ -3605,7 +3710,8 @@ function orderRoi(order: TradeOrder) {
     alertsCount: alerts.length,
     candleTrend: candlesSummary.trend,
     marketRadar: marketRadarForAI,
-  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, marketStats.volume, brain.marketRegime, candlesSummary.trend, marketStats.funding, orders.length, alerts.length, marketRadarForAI]);
+    smartFibContext,
+  }), [selectedSymbol, activeTradeMode, timeframe, livePrice, session, sanitizedBrainPayload.direction, sanitizedBrainPayload.confidence, candlesSummary.volatility, marketStats.volume, brain.marketRegime, candlesSummary.trend, marketStats.funding, orders.length, alerts.length, marketRadarForAI, smartFibContext]);
 
   const activeTradeContext = useMemo<SelectedTradeContext>(() => {
     if (activeExecutionTradeView) {
@@ -3687,6 +3793,7 @@ function orderRoi(order: TradeOrder) {
     selectedTrade: selectedTradeContext,
     selectedSignal: (aiLiveContext.signalFeed as { selected?: unknown } | undefined)?.selected ?? null,
     signalFeed: (aiLiveContext.signalFeed as { latestRows?: unknown[] } | undefined)?.latestRows ?? [],
+    smartFibContext: aiLiveContext.smartFibContext,
     chartSnapshot: aiLiveContext.chartSnapshot,
     availableDataFlags: aiLiveContext.aiPayloadDebug ?? {},
   }), [aiInput, aiExplanationMode, selectedSymbol, normalizedRadarSymbol, timeframe, livePrice, session, marketStats.high, marketStats.low, marketStats.volume, marketStats.change, marketStats.funding, sessionCountdown, radarGate, marketRadarIntelligence?.confidence, marketRadarSource, aiLiveContext, sanitizedBrainPayload, activeTradeContext, selectedTradeContext]);
@@ -5117,6 +5224,22 @@ function orderRoi(order: TradeOrder) {
                   <button className="h-7 px-2.5 rounded-lg text-[11px] bg-[#08080a] border border-[#27272f] hover:border-yellow-700">
                     Advanced
                   </button>
+                  <button
+                    onClick={() => setSmartFibEnabled((prev) => !prev)}
+                    className={`h-7 px-2.5 rounded-lg text-[11px] border transition ${
+                      smartFibEnabled
+                        ? "bg-green-500/15 border-green-500 text-green-200 hover:bg-green-500/25"
+                        : "bg-[#08080a] border-[#27272f] text-gray-300 hover:text-white hover:border-yellow-700"
+                    }`}
+                  >
+                    Smart Fib {smartFibEnabled ? "ON" : "OFF"}
+                  </button>
+                  <button
+                    onClick={() => setSmartFibSettingsOpen(true)}
+                    className="h-7 px-2.5 rounded-lg text-[11px] bg-[#08080a] border border-[#27272f] hover:border-yellow-700 hover:text-yellow-400 transition"
+                  >
+                    Fib Settings
+                  </button>
 
                   <button
                     onClick={() => setFullscreen(!fullscreen)}
@@ -5145,6 +5268,40 @@ function orderRoi(order: TradeOrder) {
                 className="relative w-full min-w-0 overflow-hidden rounded-xl border border-[rgba(255,139,0,0.25)] bg-black"
               >
                 <div ref={chartRef} className="h-[560px] w-full min-w-0 xl:h-[590px]" />
+
+                <SmartFibOverlay context={smartFibContext} chartContainer={chartRef.current} />
+
+                <div className="absolute left-4 bottom-4 z-40 w-[280px] rounded-2xl border border-green-500/20 bg-black/70 p-3 text-[11px] text-gray-200 shadow-[0_0_24px_rgba(0,0,0,0.55)]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-black text-xs text-green-300">Smart Fib Status</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${smartFibContext.enabled ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"}`}>
+                      {smartFibContext.enabled ? "ENABLED" : "DISABLED"}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] text-gray-400">
+                    <div>
+                      <div className="text-gray-500">Map</div>
+                      <div className="font-bold text-white">{smartFibContext.mapState}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Setup</div>
+                      <div className="font-bold text-white">{smartFibContext.setupType}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Levels</div>
+                      <div className="font-bold text-white">{smartFibContext.activeFibLevels.length}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Signals</div>
+                      <div className="font-bold text-white">{smartFibContext.lastSignals.length}</div>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] text-gray-400">
+                    {smartFibContext.enabled
+                      ? smartFibContext.dashboardSummary
+                      : "Smart Fib is disabled. Enable the feature to display swing maps, zones, and candidate entries."}
+                  </p>
+                </div>
 
                 <div className="absolute left-3 top-3 z-40 max-w-[300px] rounded-xl border border-yellow-500/20 bg-black/70 px-3 py-2 backdrop-blur-md shadow-[0_0_30px_rgba(0,0,0,0.65)] pointer-events-none">
                   <div className="flex items-center justify-between gap-3">
@@ -5372,8 +5529,28 @@ function orderRoi(order: TradeOrder) {
                     <span key={step} className="rounded-lg border border-zinc-800 bg-black/40 px-2 py-1 text-[10px] text-[#8b9098]">{step}</span>
                   ))}
                   <div className="ml-auto grid grid-cols-2 gap-2 text-[11px]">
-                    <button onClick={() => createOrder("LONG")} className="rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-green-300">Open Long</button>
-                    <button onClick={() => createOrder("SHORT")} className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-red-300">Open Short</button>
+                    <button
+                      onClick={() => createOrder("LONG")}
+                      disabled={!canExecuteLong}
+                      className={`rounded-lg px-3 py-1.5 font-bold ${
+                        canExecuteLong
+                          ? "border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-500/15"
+                          : "border border-zinc-800 bg-zinc-900 text-zinc-500 cursor-not-allowed opacity-60"
+                      }`}
+                    >
+                      Open Long
+                    </button>
+                    <button
+                      onClick={() => createOrder("SHORT")}
+                      disabled={!canExecuteShort}
+                      className={`rounded-lg px-3 py-1.5 font-bold ${
+                        canExecuteShort
+                          ? "border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/15"
+                          : "border border-zinc-800 bg-zinc-900 text-zinc-500 cursor-not-allowed opacity-60"
+                      }`}
+                    >
+                      Open Short
+                    </button>
                   </div>
                 </div>
               </div>
@@ -5521,6 +5698,12 @@ function orderRoi(order: TradeOrder) {
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {smartFibEnabled && (
+              <div className={`${terminalPanel} mt-3 p-4`}>
+                <SmartFibDashboard context={smartFibContext} />
               </div>
             )}
 
@@ -5828,7 +6011,7 @@ function orderRoi(order: TradeOrder) {
 
                 <button
                   onClick={() => {
-                    storageSet<WolvreneUserPrefs>(userPrefsKey(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI });
+                    storageSet<WolvreneUserPrefs>(userPrefsKey(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled });
                     addJournal("User settings saved: symbol, timeframe, order panel, and layout.");
                   }}
                   className="w-full h-9 rounded-xl bg-zinc-900 border border-yellow-700/40 text-yellow-300 text-xs font-black mb-3 hover:bg-zinc-800"
@@ -5839,13 +6022,23 @@ function orderRoi(order: TradeOrder) {
                 <div className="grid grid-cols-2 gap-2 mb-4">
                   <button
                     onClick={() => createOrder("LONG")}
-                    className="h-10 rounded-xl bg-green-500/15 border border-green-500/30 text-green-400 font-bold hover:bg-green-500/25"
+                    disabled={!canExecuteLong}
+                    className={`h-10 rounded-xl font-bold ${
+                      canExecuteLong
+                        ? "bg-green-500/15 border border-green-500/30 text-green-400 hover:bg-green-500/25"
+                        : "bg-zinc-900 border border-zinc-800 text-zinc-500 cursor-not-allowed opacity-60"
+                    }`}
                   >
                     Open Long
                   </button>
                   <button
                     onClick={() => createOrder("SHORT")}
-                    className="h-10 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 font-bold hover:bg-red-500/25"
+                    disabled={!canExecuteShort}
+                    className={`h-10 rounded-xl font-bold ${
+                      canExecuteShort
+                        ? "bg-red-500/15 border border-red-500/30 text-red-400 hover:bg-red-500/25"
+                        : "bg-zinc-900 border border-zinc-800 text-zinc-500 cursor-not-allowed opacity-60"
+                    }`}
                   >
                     Open Short
                   </button>
@@ -6308,7 +6501,7 @@ function orderRoi(order: TradeOrder) {
 
                   <div className="rounded-2xl border border-yellow-700/25 bg-yellow-500/5 p-4">
                     <p className="text-xs text-yellow-500 mb-2">AI Bridge Status: {aiBridgeStatus.toUpperCase()}</p>
-                    <p className="text-xs leading-5 text-gray-400">AI reads unified terminal context (brain, radar, signal feed, selected trade, active trade, and chart snapshot) with intent guard + rate protection.</p>
+                    <p className="text-xs leading-5 text-gray-400">AI reads unified terminal context (brain, radar, signal feed, selected trade, active trade, chart snapshot, and Smart Fib engine context) with intent guard + rate protection.</p>
                   </div>
                 </div>
               </div>
@@ -6352,6 +6545,26 @@ function orderRoi(order: TradeOrder) {
 
             <button onClick={resetDashboard} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-zinc-800">
               Reset Chart
+            </button>
+
+            <button
+              onClick={() => {
+                setSmartFibEnabled(!smartFibEnabled);
+                setContextMenu({ open: false, x: 0, y: 0, price: 0 });
+              }}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-zinc-800"
+            >
+              Smart Fib: {smartFibEnabled ? "ON" : "OFF"}
+            </button>
+
+            <button
+              onClick={() => {
+                setSmartFibSettingsOpen(true);
+                setContextMenu({ open: false, x: 0, y: 0, price: 0 });
+              }}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-zinc-800"
+            >
+              Smart Fib Settings
             </button>
 
             <button
@@ -6676,6 +6889,37 @@ function orderRoi(order: TradeOrder) {
                   Reset Default
                 </button>
                 <button onClick={() => setSettingsOpen(false)} className="px-6 py-3 rounded-xl font-bold text-black" style={{ backgroundColor: gold }}>
+                  OK
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {smartFibSettingsOpen && (
+          <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50">
+            <div className="bg-[#151519] border border-[#303038] rounded-2xl w-full max-w-4xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold">Smart Fib Settings</h2>
+                <button onClick={() => setSmartFibSettingsOpen(false)} className="text-2xl text-gray-400 hover:text-white">
+                  ×
+                </button>
+              </div>
+
+              <SmartFibSettingsPanel
+                settings={smartFibSettings}
+                onSettingsChange={(newSettings) => {
+                  setSmartFibSettings({ ...smartFibSettings, ...newSettings });
+                  smartFibEngine.updateSettings(newSettings);
+                }}
+                onReset={() => {
+                  setSmartFibSettings({ ...SMART_FIB_DEFAULTS });
+                  smartFibEngine.updateSettings(SMART_FIB_DEFAULTS);
+                }}
+              />
+
+              <div className="flex justify-end mt-8">
+                <button onClick={() => setSmartFibSettingsOpen(false)} className="px-6 py-3 rounded-xl font-bold text-black" style={{ backgroundColor: gold }}>
                   OK
                 </button>
               </div>
