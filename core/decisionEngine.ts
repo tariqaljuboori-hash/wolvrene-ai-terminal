@@ -1,10 +1,28 @@
 import { TF_SECONDS } from "@/lib/bitget";
 
 export type DecisionSignalDirection = "LONG" | "SHORT" | null;
-export type DecisionPhase = "SCANNING" | "SPAWNED" | "VALIDATED" | "EXECUTE" | "MANAGE" | "EXIT" | "FILTERED" | "NO_TRADE";
+export type DecisionPhase =
+  | "SCANNING"
+  | "SPAWNED"
+  | "VALIDATED"
+  | "EXECUTE"
+  | "MANAGE"
+  | "EXIT"
+  | "FILTERED"
+  | "NO_TRADE";
 
 type StructureBias = "BULLISH" | "BEARISH" | "RANGING" | "WAITING";
-type StructureEvent = "BOS_UP" | "BOS_DOWN" | "CHOCH_UP" | "CHOCH_DOWN" | "SWEEP_LOW" | "SWEEP_HIGH" | "RECLAIM" | "REJECTION" | "NONE";
+type StructureEvent =
+  | "BOS_UP"
+  | "BOS_DOWN"
+  | "CHOCH_UP"
+  | "CHOCH_DOWN"
+  | "SWEEP_LOW"
+  | "SWEEP_HIGH"
+  | "RECLAIM"
+  | "REJECTION"
+  | "NONE";
+
 type LiquidityBias = "BUY_SIDE_TAKEN" | "SELL_SIDE_TAKEN" | "BALANCED" | "WAITING";
 type TriggerQuality = "NONE" | "WEAK" | "VALID" | "STRONG" | "SNIPER";
 type TradeMode = "SCALP" | "SWING";
@@ -130,8 +148,7 @@ export type DecisionEngineInput = {
   activeExecutionTrade: ActiveExecutionTrade | null;
   allowMultiTimeframeTrades: boolean;
   tradeRecalcCooldownCycles: number;
-  
-  // Smart Fib context
+
   smartFibMapState?: string;
   smartFibSetupType?: "LONG_MAP" | "SHORT_MAP" | "WAITING";
   smartFibSwingHigh?: number;
@@ -146,7 +163,13 @@ export type DecisionEngineInput = {
   smartFibSwingSelectionReason?: string;
   smartFibSwingAgeCandles?: number;
   smartFibFibLevelCount?: number;
-  smartFibCurrentZoneState?: "NONE" | "SILVER_WATCH" | "SILVER_ACTIVE" | "SNIPER_WATCH" | "SNIPER_ACTIVE" | "SNIPER_CONFLICT";
+  smartFibCurrentZoneState?:
+    | "NONE"
+    | "SILVER_WATCH"
+    | "SILVER_ACTIVE"
+    | "SNIPER_WATCH"
+    | "SNIPER_ACTIVE"
+    | "SNIPER_CONFLICT";
   smartFibClosestLevelDistance?: number;
   smartFibClosestLevelDistanceAtr?: number;
   smartFibClosestLevelPrice?: number;
@@ -155,30 +178,28 @@ export type DecisionEngineInput = {
   smartFibInvalidationPrice?: number;
 };
 
+type SmartFibZoneState =
+  | "NONE"
+  | "MAP_ONLY"
+  | "SILVER_WATCH"
+  | "SILVER_ACTIVE"
+  | "SNIPER_WATCH"
+  | "SNIPER_ACTIVE"
+  | "SNIPER_CONFLICT";
+
 type SmartFibEvaluation = {
   mapValid: boolean;
+  mapDirection: DecisionSignalDirection;
   swingQualityAcceptable: boolean;
-  zoneState: "NONE" | "SILVER_WATCH" | "SILVER_ACTIVE" | "SNIPER_WATCH" | "SNIPER_ACTIVE" | "MAP_ONLY";
-  directionAlign: boolean;
-  directionConflict: boolean;
+  zoneState: SmartFibZoneState;
   priceNearImportantLevel: boolean;
+  executableZone: boolean;
+  confirmationConflict: boolean;
   qualityBoost: number;
   blockedReason: string;
 };
 
-function evaluateSmartFibZone(input: DecisionEngineInput): SmartFibEvaluation {
-  const result: SmartFibEvaluation = {
-    mapValid: false,
-    swingQualityAcceptable: false,
-    zoneState: "NONE",
-    directionAlign: false,
-    directionConflict: false,
-    priceNearImportantLevel: false,
-    qualityBoost: 0,
-    blockedReason: "",
-  };
-
-  // Check if Smart Fib map is valid
+function isSmartFibMapReady(input: DecisionEngineInput): boolean {
   if (
     !input.smartFibMapState ||
     input.smartFibMapState === "DISABLED" ||
@@ -186,63 +207,112 @@ function evaluateSmartFibZone(input: DecisionEngineInput): SmartFibEvaluation {
     input.smartFibMapState === "WAITING_FOR_SWING_PAIR" ||
     input.smartFibMapState === "INVALIDATED"
   ) {
+    return false;
+  }
+
+  if (input.smartFibRangeQuality === "TOO_SMALL") {
+    return false;
+  }
+
+  if (!input.smartFibFibLevelCount || input.smartFibFibLevelCount <= 0) {
+    return false;
+  }
+
+  return true;
+}
+
+function getSmartFibDirection(input: DecisionEngineInput): DecisionSignalDirection {
+  if (!isSmartFibMapReady(input)) return null;
+
+  if (input.smartFibSetupType === "LONG_MAP") return "LONG";
+  if (input.smartFibSetupType === "SHORT_MAP") return "SHORT";
+
+  return null;
+}
+
+function evaluateSmartFibZone(
+  input: DecisionEngineInput,
+  finalDirection: DecisionSignalDirection,
+  confirmationDirection: DecisionSignalDirection
+): SmartFibEvaluation {
+  const result: SmartFibEvaluation = {
+    mapValid: false,
+    mapDirection: null,
+    swingQualityAcceptable: false,
+    zoneState: "NONE",
+    priceNearImportantLevel: false,
+    executableZone: false,
+    confirmationConflict: false,
+    qualityBoost: 0,
+    blockedReason: "",
+  };
+
+  if (!isSmartFibMapReady(input)) {
     result.blockedReason = `Smart Fib map not ready: ${input.smartFibMapState || "disabled"}`;
     return result;
   }
 
-  // Check swing quality
+  const mapDirection = getSmartFibDirection(input);
+  result.mapDirection = mapDirection;
+
+  if (!mapDirection) {
+    result.blockedReason = `Smart Fib setup type not directional: ${input.smartFibSetupType || "WAITING"}`;
+    return result;
+  }
+
   const minSwingQuality = 40;
-  if (!input.smartFibSwingQualityScore || input.smartFibSwingQualityScore < minSwingQuality) {
-    result.blockedReason = `Smart Fib swing quality too low: ${input.smartFibSwingQualityScore || 0} < ${minSwingQuality}`;
+  const swingQuality = input.smartFibSwingQualityScore ?? 0;
+
+  if (swingQuality < minSwingQuality) {
+    result.blockedReason = `Smart Fib swing quality too low: ${swingQuality} < ${minSwingQuality}`;
     return result;
   }
 
   result.mapValid = true;
   result.swingQualityAcceptable = true;
 
-  // Check range quality
-  if (input.smartFibRangeQuality === "COMPRESSED" || input.smartFibRangeQuality === "TOO_SMALL") {
-    result.blockedReason = `Smart Fib range quality: ${input.smartFibRangeQuality}`;
-    result.mapValid = false;
+  if (finalDirection && finalDirection !== mapDirection) {
+    result.confirmationConflict = true;
+    result.zoneState = "SNIPER_CONFLICT";
+    result.blockedReason = `Final direction ${finalDirection} conflicts with Smart Fib ${input.smartFibSetupType}`;
     return result;
   }
 
-  // Evaluate zone state (this is already tracked in context, just use it)
-  result.zoneState = input.smartFibCurrentZoneState || "NONE";
+  if (confirmationDirection && confirmationDirection !== mapDirection) {
+    result.confirmationConflict = true;
+    result.zoneState = "SNIPER_CONFLICT";
+    result.blockedReason = `Confirmation/Radar ${confirmationDirection} conflicts with Smart Fib ${input.smartFibSetupType}`;
+    return result;
+  }
 
-  // Check if price is actually near important levels
+  const incomingZone = input.smartFibCurrentZoneState || "NONE";
+
   result.priceNearImportantLevel =
-    input.smartFibCurrentZoneState === "SNIPER_ACTIVE" ||
-    input.smartFibCurrentZoneState === "SNIPER_WATCH" ||
-    input.smartFibCurrentZoneState === "SILVER_ACTIVE" ||
-    input.smartFibCurrentZoneState === "SILVER_WATCH";
+    incomingZone === "SNIPER_ACTIVE" ||
+    incomingZone === "SNIPER_WATCH" ||
+    incomingZone === "SILVER_ACTIVE" ||
+    incomingZone === "SILVER_WATCH";
 
-  // If price is not near important levels, mark as MAP_ONLY (visual reference only)
-  if (!result.priceNearImportantLevel && input.smartFibMapState !== "INVALIDATED") {
+  if (!result.priceNearImportantLevel) {
     result.zoneState = "MAP_ONLY";
+    result.blockedReason = "Smart Fib map only. Price is not near 0.882 / 0.941 / 0.65 / 0.618.";
+    return result;
   }
 
-  // Check direction alignment with Smart Fib setup
-  if (input.smartFibSetupType === "LONG_MAP") {
-    result.directionAlign = true;
-  } else if (input.smartFibSetupType === "SHORT_MAP") {
-    result.directionAlign = true;
-  }
+  result.zoneState = incomingZone as SmartFibZoneState;
 
-  // Quality boost based on zone state (only if price is actually near level)
-  if (result.priceNearImportantLevel) {
-    if (input.smartFibCurrentZoneState === "SNIPER_ACTIVE") {
-      result.qualityBoost = 24; // High priority zone
-    } else if (input.smartFibCurrentZoneState === "SNIPER_WATCH") {
-      result.qualityBoost = 16; // Medium priority watch zone
-    } else if (input.smartFibCurrentZoneState === "SILVER_ACTIVE") {
-      result.qualityBoost = 14; // Silver reaction confirmed
-    } else if (input.smartFibCurrentZoneState === "SILVER_WATCH") {
-      result.qualityBoost = 8; // Silver watch zone
-    }
-  } else {
-    // Price far from levels: no boost, treat as MAP_ONLY
-    result.qualityBoost = 0;
+  if (incomingZone === "SNIPER_ACTIVE") {
+    result.qualityBoost = 26;
+    result.executableZone = true;
+  } else if (incomingZone === "SNIPER_WATCH") {
+    result.qualityBoost = 16;
+    result.executableZone = false;
+  } else if (incomingZone === "SILVER_ACTIVE") {
+    result.qualityBoost = 14;
+    result.executableZone = true;
+  } else if (incomingZone === "SILVER_WATCH") {
+    result.qualityBoost = 8;
+    result.executableZone = false;
   }
 
   return result;
@@ -252,68 +322,158 @@ function getInstitutionalPrecision(input: DecisionEngineInput): InstitutionalPre
   const mark = input.livePrice || input.lastClose || input.signalPlan.entry || 0;
   const sample = input.recentCandles.slice(-80);
   const last = sample[sample.length - 1];
+
   const impulseRange = last ? Math.max(last.high - last.low, mark * 0.0001) : mark * 0.002;
   const body = last ? Math.abs(last.close - last.open) : 0;
   const bodyRatio = impulseRange ? body / impulseRange : 0;
 
   const structureDirection: DecisionSignalDirection =
-    input.structureState.event === "BOS_UP" || input.structureState.event === "CHOCH_UP" || input.structureState.event === "SWEEP_LOW"
+    input.structureState.event === "BOS_UP" ||
+    input.structureState.event === "CHOCH_UP" ||
+    input.structureState.event === "SWEEP_LOW"
       ? "LONG"
-      : input.structureState.event === "BOS_DOWN" || input.structureState.event === "CHOCH_DOWN" || input.structureState.event === "SWEEP_HIGH"
-      ? "SHORT"
-      : input.structureState.bias === "BULLISH"
-      ? "LONG"
-      : input.structureState.bias === "BEARISH"
-      ? "SHORT"
-      : null;
+      : input.structureState.event === "BOS_DOWN" ||
+          input.structureState.event === "CHOCH_DOWN" ||
+          input.structureState.event === "SWEEP_HIGH"
+        ? "SHORT"
+        : input.structureState.bias === "BULLISH"
+          ? "LONG"
+          : input.structureState.bias === "BEARISH"
+            ? "SHORT"
+            : null;
 
   const triggerDirection = input.triggerValidation.direction;
   const liquidityDirection = input.liquidityState.trapDirection;
   const signalDirection = input.signalPlan.direction;
-  const votes = [structureDirection, triggerDirection, liquidityDirection, signalDirection].filter(Boolean) as Exclude<DecisionSignalDirection, null>[];
+
+  const votes = [structureDirection, triggerDirection, liquidityDirection, signalDirection].filter(
+    Boolean
+  ) as Exclude<DecisionSignalDirection, null>[];
+
   const longVotes = votes.filter((v) => v === "LONG").length;
   const shortVotes = votes.filter((v) => v === "SHORT").length;
-  const preferredDirection: DecisionSignalDirection = longVotes > shortVotes ? "LONG" : shortVotes > longVotes ? "SHORT" : triggerDirection || liquidityDirection || structureDirection || signalDirection;
 
-  const structureOpposesPreferred = Boolean(
-    preferredDirection === "LONG" && input.structureState.bias === "BEARISH" && input.structureState.event !== "CHOCH_UP" && input.structureState.event !== "SWEEP_LOW"
-  ) || Boolean(
-    preferredDirection === "SHORT" && input.structureState.bias === "BULLISH" && input.structureState.event !== "CHOCH_DOWN" && input.structureState.event !== "SWEEP_HIGH"
-  );
+  const preferredDirection: DecisionSignalDirection =
+    longVotes > shortVotes
+      ? "LONG"
+      : shortVotes > longVotes
+        ? "SHORT"
+        : triggerDirection || liquidityDirection || structureDirection || signalDirection;
+
+  const structureOpposesPreferred =
+    Boolean(
+      preferredDirection === "LONG" &&
+        input.structureState.bias === "BEARISH" &&
+        input.structureState.event !== "CHOCH_UP" &&
+        input.structureState.event !== "SWEEP_LOW"
+    ) ||
+    Boolean(
+      preferredDirection === "SHORT" &&
+        input.structureState.bias === "BULLISH" &&
+        input.structureState.event !== "CHOCH_DOWN" &&
+        input.structureState.event !== "SWEEP_HIGH"
+    );
 
   const triggerOpposesStructure = Boolean(
-    triggerDirection && structureDirection && triggerDirection !== structureDirection && input.triggerValidation.quality !== "SNIPER"
+    triggerDirection &&
+      structureDirection &&
+      triggerDirection !== structureDirection &&
+      input.triggerValidation.quality !== "SNIPER"
   );
 
   const liquidityOpposesTrigger = Boolean(
-    liquidityDirection && triggerDirection && liquidityDirection !== triggerDirection && input.triggerValidation.quality !== "SNIPER"
+    liquidityDirection &&
+      triggerDirection &&
+      liquidityDirection !== triggerDirection &&
+      input.triggerValidation.quality !== "SNIPER"
   );
 
-  const hardConflict = Boolean(preferredDirection && (structureOpposesPreferred || triggerOpposesStructure || liquidityOpposesTrigger));
-  const sessionWeight = input.session.includes("New York") ? 10 : input.session.includes("London") ? 8 : input.session.includes("Asia") ? 4 : 1;
-  const volatilityWeight = input.candlesVolatility === "NORMAL" ? 6 : input.candlesVolatility === "LOW" ? 2 : -7;
-  const triggerWeight = input.triggerValidation.quality === "SNIPER" ? 22 : input.triggerValidation.quality === "STRONG" ? 17 : input.triggerValidation.quality === "VALID" ? 11 : input.triggerValidation.quality === "WEAK" ? 2 : -8;
-  const structureWeight = input.structureState.bias === "BULLISH" || input.structureState.bias === "BEARISH" ? 9 : input.structureState.bias === "RANGING" ? -4 : -8;
-  const liquidityWeight = liquidityDirection && preferredDirection === liquidityDirection ? 12 : input.liquidityState.sweptHigh || input.liquidityState.sweptLow ? 4 : 0;
+  const hardConflict = Boolean(
+    preferredDirection && (structureOpposesPreferred || triggerOpposesStructure || liquidityOpposesTrigger)
+  );
+
+  const sessionWeight = input.session.includes("New York")
+    ? 10
+    : input.session.includes("London")
+      ? 8
+      : input.session.includes("Asia")
+        ? 4
+        : 1;
+
+  const volatilityWeight =
+    input.candlesVolatility === "NORMAL" ? 6 : input.candlesVolatility === "LOW" ? 2 : -7;
+
+  const triggerWeight =
+    input.triggerValidation.quality === "SNIPER"
+      ? 22
+      : input.triggerValidation.quality === "STRONG"
+        ? 17
+        : input.triggerValidation.quality === "VALID"
+          ? 11
+          : input.triggerValidation.quality === "WEAK"
+            ? 2
+            : -8;
+
+  const structureWeight =
+    input.structureState.bias === "BULLISH" || input.structureState.bias === "BEARISH"
+      ? 9
+      : input.structureState.bias === "RANGING"
+        ? -4
+        : -8;
+
+  const liquidityWeight =
+    liquidityDirection && preferredDirection === liquidityDirection
+      ? 12
+      : input.liquidityState.sweptHigh || input.liquidityState.sweptLow
+        ? 4
+        : 0;
+
   const impulseWeight = bodyRatio > 0.62 ? 6 : bodyRatio > 0.42 ? 3 : -2;
   const alignmentScore = longVotes === shortVotes ? 0 : Math.abs(longVotes - shortVotes) * 8;
   const conflictPenalty = hardConflict ? -34 : triggerOpposesStructure || liquidityOpposesTrigger ? -18 : 0;
-  const precisionScore = Math.max(0, Math.min(100, 45 + sessionWeight + volatilityWeight + triggerWeight + structureWeight + liquidityWeight + impulseWeight + alignmentScore + conflictPenalty));
 
-  const institutionalGrade = hardConflict || precisionScore < 55
-    ? "REJECT"
-    : precisionScore >= 88 && input.triggerValidation.quality !== "NONE"
-    ? "A+"
-    : precisionScore >= 76
-    ? "A"
-    : precisionScore >= 64
-    ? "B"
-    : "C";
+  const precisionScore = Math.max(
+    0,
+    Math.min(
+      100,
+      45 +
+        sessionWeight +
+        volatilityWeight +
+        triggerWeight +
+        structureWeight +
+        liquidityWeight +
+        impulseWeight +
+        alignmentScore +
+        conflictPenalty
+    )
+  );
 
-  const executeAllowed = Boolean(preferredDirection && !hardConflict && precisionScore >= 76 && input.triggerValidation.quality !== "NONE");
-  const eliteAllowed = Boolean(executeAllowed && precisionScore >= 86 && (input.triggerValidation.quality === "STRONG" || input.triggerValidation.quality === "SNIPER"));
+  const institutionalGrade =
+    hardConflict || precisionScore < 55
+      ? "REJECT"
+      : precisionScore >= 88 && input.triggerValidation.quality !== "NONE"
+        ? "A+"
+        : precisionScore >= 76
+          ? "A"
+          : precisionScore >= 64
+            ? "B"
+            : "C";
+
+  const executeAllowed = Boolean(
+    preferredDirection &&
+      !hardConflict &&
+      precisionScore >= 76 &&
+      input.triggerValidation.quality !== "NONE"
+  );
+
+  const eliteAllowed = Boolean(
+    executeAllowed &&
+      precisionScore >= 86 &&
+      (input.triggerValidation.quality === "STRONG" || input.triggerValidation.quality === "SNIPER")
+  );
+
   const reason = hardConflict
-    ? "Institutional filter blocked the signal because structure, liquidity, and trigger are not aligned."
+    ? "Institutional filter sees internal conflict between structure, liquidity, and trigger."
     : `Institutional ${institutionalGrade} · precision ${precisionScore}% · votes L:${longVotes}/S:${shortVotes} · session weight ${sessionWeight}`;
 
   return {
@@ -332,96 +492,298 @@ function getInstitutionalPrecision(input: DecisionEngineInput): InstitutionalPre
   };
 }
 
-export function buildRawDecisionPlan(input: DecisionEngineInput): { institutionalPrecision: InstitutionalPrecision; rawDecisionPlan: DecisionPlan } {
+export function buildRawDecisionPlan(input: DecisionEngineInput): {
+  institutionalPrecision: InstitutionalPrecision;
+  rawDecisionPlan: DecisionPlan;
+} {
   const institutionalPrecision = getInstitutionalPrecision(input);
-  const smartFibEval = evaluateSmartFibZone(input);
   const mark = input.livePrice || input.lastClose || input.signalPlan.entry || 0;
-  const time = typeof input.lastCandleTime === "number" ? input.lastCandleTime : Math.floor(Date.now() / 1000);
+  const time =
+    typeof input.lastCandleTime === "number"
+      ? input.lastCandleTime
+      : Math.floor(Date.now() / 1000);
 
   const structureDirection: DecisionSignalDirection =
-    input.triggerValidation.direction || input.liquidityState.trapDirection ||
-    (input.structureState.event === "BOS_UP" || input.structureState.event === "CHOCH_UP" || input.structureState.event === "SWEEP_LOW"
+    input.triggerValidation.direction ||
+    input.liquidityState.trapDirection ||
+    (input.structureState.event === "BOS_UP" ||
+    input.structureState.event === "CHOCH_UP" ||
+    input.structureState.event === "SWEEP_LOW"
       ? "LONG"
-      : input.structureState.event === "BOS_DOWN" || input.structureState.event === "CHOCH_DOWN" || input.structureState.event === "SWEEP_HIGH"
-      ? "SHORT"
-      : input.structureState.bias === "BULLISH"
-      ? "LONG"
-      : input.structureState.bias === "BEARISH"
-      ? "SHORT"
-      : null);
+      : input.structureState.event === "BOS_DOWN" ||
+          input.structureState.event === "CHOCH_DOWN" ||
+          input.structureState.event === "SWEEP_HIGH"
+        ? "SHORT"
+        : input.structureState.bias === "BULLISH"
+          ? "LONG"
+          : input.structureState.bias === "BEARISH"
+            ? "SHORT"
+            : null);
 
-  const direction = institutionalPrecision.preferredDirection || input.triggerValidation.direction || input.signalPlan.direction || structureDirection;
-  const directionalAgreement = Boolean(direction && input.signalPlan.direction && structureDirection && input.signalPlan.direction === structureDirection && !institutionalPrecision.hardConflict);
-  const oppositeShift = Boolean(
-    direction === "LONG" && (input.structureState.event === "BOS_DOWN" || input.structureState.event === "CHOCH_DOWN" || input.structureState.event === "SWEEP_HIGH")
-  ) || Boolean(
-    direction === "SHORT" && (input.structureState.event === "BOS_UP" || input.structureState.event === "CHOCH_UP" || input.structureState.event === "SWEEP_LOW")
+  const smartFibDirection = getSmartFibDirection(input);
+
+  const fallbackDirection =
+    institutionalPrecision.preferredDirection ||
+    input.triggerValidation.direction ||
+    input.signalPlan.direction ||
+    structureDirection;
+
+  // IMPORTANT:
+  // Smart Fib is the foundation.
+  // If valid, it owns the hunting direction.
+  // Radar / institutional / trigger can confirm or block, but cannot reverse it.
+  const direction = smartFibDirection || fallbackDirection;
+
+  const smartFibEval = evaluateSmartFibZone(input, direction, institutionalPrecision.preferredDirection);
+
+  const confirmationConflict = Boolean(
+    smartFibDirection &&
+      institutionalPrecision.preferredDirection &&
+      institutionalPrecision.preferredDirection !== smartFibDirection
   );
 
-  const triggerScore = input.structureState.event === "NONE" ? 0 : input.structureState.event.includes("CHOCH") ? 18 : input.structureState.event.includes("BOS") ? 16 : input.structureState.event.includes("SWEEP") ? 14 : 10;
-  const agreementBoost = directionalAgreement ? 12 : structureDirection && input.signalPlan.direction && structureDirection !== input.signalPlan.direction ? -18 : 0;
-  const liquidityBoost = input.liquidityState.trapDirection && direction === input.liquidityState.trapDirection ? input.liquidityState.score : Math.max(0, input.liquidityState.score - 10);
-  const triggerBoost = input.triggerValidation.direction && direction === input.triggerValidation.direction ? input.triggerValidation.score : Math.max(0, input.triggerValidation.score - 12);
-  const volatilityAdjust = input.candlesVolatility === "HIGH" ? -8 : input.candlesVolatility === "LOW" ? -3 : 4;
+  const directionalAgreement = Boolean(
+    direction &&
+      input.signalPlan.direction &&
+      structureDirection &&
+      input.signalPlan.direction === structureDirection &&
+      !institutionalPrecision.hardConflict
+  );
+
+  const oppositeShift =
+    Boolean(
+      direction === "LONG" &&
+        (input.structureState.event === "BOS_DOWN" ||
+          input.structureState.event === "CHOCH_DOWN" ||
+          input.structureState.event === "SWEEP_HIGH")
+    ) ||
+    Boolean(
+      direction === "SHORT" &&
+        (input.structureState.event === "BOS_UP" ||
+          input.structureState.event === "CHOCH_UP" ||
+          input.structureState.event === "SWEEP_LOW")
+    );
+
+  const triggerScore =
+    input.structureState.event === "NONE"
+      ? 0
+      : input.structureState.event.includes("CHOCH")
+        ? 18
+        : input.structureState.event.includes("BOS")
+          ? 16
+          : input.structureState.event.includes("SWEEP")
+            ? 14
+            : 10;
+
+  const agreementBoost = directionalAgreement
+    ? 12
+    : structureDirection && input.signalPlan.direction && structureDirection !== input.signalPlan.direction
+      ? -18
+      : 0;
+
+  const liquidityBoost =
+    input.liquidityState.trapDirection && direction === input.liquidityState.trapDirection
+      ? input.liquidityState.score
+      : Math.max(0, input.liquidityState.score - 10);
+
+  const triggerBoost =
+    input.triggerValidation.direction && direction === input.triggerValidation.direction
+      ? input.triggerValidation.score
+      : Math.max(0, input.triggerValidation.score - 12);
+
+  const volatilityAdjust =
+    input.candlesVolatility === "HIGH" ? -8 : input.candlesVolatility === "LOW" ? -3 : 4;
+
   const institutionalBoost = Math.round((institutionalPrecision.precisionScore - 60) * 0.45);
-  const conflictPenalty = institutionalPrecision.hardConflict ? -42 : institutionalPrecision.triggerOpposesStructure || institutionalPrecision.liquidityOpposesTrigger ? -22 : 0;
-  const smartFibBoost = smartFibEval.mapValid && smartFibEval.swingQualityAcceptable ? smartFibEval.qualityBoost : 0;
-  const proSignal = Boolean(direction && institutionalPrecision.eliteAllowed && (directionalAgreement || input.liquidityState.trapDirection === direction || input.triggerValidation.quality === "SNIPER" || smartFibEval.zoneState === "SNIPER_ACTIVE"));
-  const quality = Math.round(Math.max(0, Math.min(100, input.signalPlan.confidence + input.structureState.score + triggerScore + liquidityBoost + triggerBoost + agreementBoost + volatilityAdjust + institutionalBoost + conflictPenalty + smartFibBoost - 32)));
+
+  const conflictPenalty =
+    institutionalPrecision.hardConflict || confirmationConflict || smartFibEval.confirmationConflict
+      ? -45
+      : institutionalPrecision.triggerOpposesStructure || institutionalPrecision.liquidityOpposesTrigger
+        ? -22
+        : 0;
+
+  const smartFibBoost =
+    smartFibEval.mapValid &&
+    smartFibEval.swingQualityAcceptable &&
+    !smartFibEval.confirmationConflict
+      ? smartFibEval.qualityBoost
+      : 0;
+
+  const proSignal = Boolean(
+    direction &&
+      institutionalPrecision.eliteAllowed &&
+      !confirmationConflict &&
+      !smartFibEval.confirmationConflict &&
+      (directionalAgreement ||
+        input.liquidityState.trapDirection === direction ||
+        input.triggerValidation.quality === "SNIPER" ||
+        smartFibEval.zoneState === "SNIPER_ACTIVE")
+  );
+
+  const quality = Math.round(
+    Math.max(
+      0,
+      Math.min(
+        100,
+        input.signalPlan.confidence +
+          input.structureState.score +
+          triggerScore +
+          liquidityBoost +
+          triggerBoost +
+          agreementBoost +
+          volatilityAdjust +
+          institutionalBoost +
+          conflictPenalty +
+          smartFibBoost -
+          32
+      )
+    )
+  );
+
   const activeTradeBlocking = Boolean(
     input.activeExecutionTrade &&
       input.activeExecutionTrade.symbol === input.selectedSymbol &&
-      ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(input.activeExecutionTrade.status) &&
+      ["OPEN", "TP1_HIT", "TP2_HIT", "RUNNER", "BREAKEVEN", "CLOSING"].includes(
+        input.activeExecutionTrade.status
+      ) &&
       (!input.allowMultiTimeframeTrades || input.activeExecutionTrade.timeframe === input.timeframe)
   );
+
   const cooldownBlocking = input.tradeRecalcCooldownCycles > 0;
 
+  const smartFibMapOnly = smartFibEval.mapValid && smartFibEval.zoneState === "MAP_ONLY";
+
+  const smartFibExecutionBlock = Boolean(
+    smartFibEval.mapValid &&
+      (smartFibEval.confirmationConflict ||
+        !smartFibEval.priceNearImportantLevel ||
+        !smartFibEval.executableZone)
+  );
+
+  const triggerAllowed =
+    input.triggerValidation.quality === "VALID" ||
+    input.triggerValidation.quality === "STRONG" ||
+    input.triggerValidation.quality === "SNIPER";
+
   const phase: DecisionPhase = !input.decisionSettings.enabled
-    ? input.signalPlan.state === "NO TRADE" || input.signalPlan.state === "WAITING" ? "SCANNING" : "SPAWNED"
+    ? input.signalPlan.state === "NO TRADE" || input.signalPlan.state === "WAITING"
+      ? "SCANNING"
+      : "SPAWNED"
     : activeTradeBlocking
-    ? "MANAGE"
-    : cooldownBlocking
-    ? "SCANNING"
-    : !mark || !direction
-    ? "SCANNING"
-    : institutionalPrecision.hardConflict
-    ? "FILTERED"
-    : oppositeShift && input.decisionSettings.cancelOnOppositeShift
-    ? "FILTERED"
-    : quality >= Math.max(input.decisionSettings.executeConfidence, 86) && institutionalPrecision.executeAllowed && (!input.decisionSettings.requireTriggerForExecute || input.triggerValidation.quality === "VALID" || input.triggerValidation.quality === "STRONG" || input.triggerValidation.quality === "SNIPER") && (!input.decisionSettings.proSignalOnly || proSignal)
-    ? "EXECUTE"
-    : quality >= Math.max(input.decisionSettings.validateConfidence, 72) && !institutionalPrecision.hardConflict
-    ? "VALIDATED"
-    : quality >= Math.max(input.decisionSettings.spawnConfidence, 58) && institutionalPrecision.institutionalGrade !== "REJECT"
-    ? "SPAWNED"
-    : "NO_TRADE";
+      ? "MANAGE"
+      : cooldownBlocking
+        ? "SCANNING"
+        : !mark || !direction
+          ? "SCANNING"
+          : confirmationConflict || smartFibEval.confirmationConflict
+            ? "FILTERED"
+            : institutionalPrecision.hardConflict
+              ? "FILTERED"
+              : oppositeShift && input.decisionSettings.cancelOnOppositeShift && !smartFibDirection
+                ? "FILTERED"
+                : smartFibMapOnly
+                  ? "NO_TRADE"
+                  : quality >= Math.max(input.decisionSettings.executeConfidence, 86) &&
+                      institutionalPrecision.executeAllowed &&
+                      !smartFibExecutionBlock &&
+                      (!input.decisionSettings.requireTriggerForExecute || triggerAllowed) &&
+                      (!input.decisionSettings.proSignalOnly || proSignal)
+                    ? "EXECUTE"
+                    : quality >= Math.max(input.decisionSettings.validateConfidence, 72) &&
+                        !institutionalPrecision.hardConflict &&
+                        !smartFibEval.confirmationConflict
+                      ? "VALIDATED"
+                      : quality >= Math.max(input.decisionSettings.spawnConfidence, 58) &&
+                          institutionalPrecision.institutionalGrade !== "REJECT"
+                        ? "SPAWNED"
+                        : "NO_TRADE";
+
+  const candidateEntry = input.signalPlan.entry || input.smartFibClosestLevelPrice || mark;
 
   const riskDistance = Math.max(
-    input.signalPlan.entry && input.signalPlan.sl ? Math.abs(input.signalPlan.entry - input.signalPlan.sl) : 0,
+    input.signalPlan.entry && input.signalPlan.sl
+      ? Math.abs(input.signalPlan.entry - input.signalPlan.sl)
+      : 0,
     mark * 0.0022
   );
-  const entry = input.signalPlan.entry || input.smartFibClosestLevelPrice || mark;
-  const sl = input.signalPlan.sl || input.smartFibInvalidationPrice || (direction === "LONG" ? entry - riskDistance : entry + riskDistance);
-  const tp1 = input.signalPlan.tp1 || (direction === "LONG" ? entry + riskDistance * 1.25 : entry - riskDistance * 1.25);
-  const tp2 = input.signalPlan.tp2 || (direction === "LONG" ? entry + riskDistance * 2.0 : entry - riskDistance * 2.0);
-  const tp3 = input.signalPlan.tp3 || (direction === "LONG" ? entry + riskDistance * 3.0 : entry - riskDistance * 3.0);
-  const invalidation = direction === "LONG" ? Math.min(sl, input.structureState.lastSwingLow || sl) : Math.max(sl, input.structureState.lastSwingHigh || sl);
 
-  const smartFibInfo = smartFibEval.mapValid ? ` · Smart Fib ${smartFibEval.zoneState}` : "";
-  const action = phase === "EXECUTE"
-    ? `ENTER NOW ${direction}: institutional ${institutionalPrecision.institutionalGrade} alignment confirmed${smartFibInfo}. Use pro-signal risk control.`
-    : phase === "VALIDATED"
-    ? `WAIT RETEST ${direction}: setup validated${smartFibInfo}, but precision filter wants cleaner continuation/retest.`
-    : phase === "SPAWNED"
-    ? `EARLY WATCH ${direction}: idea spawned${smartFibInfo}, not mature enough for execution.`
-    : phase === "FILTERED"
-    ? `FILTERED: ${institutionalPrecision.reason}${smartFibEval.mapValid ? ` · ${smartFibEval.blockedReason}` : ""}`
-    : "Scan only. No institutional-grade decision yet.";
+  const candidateSl =
+    input.signalPlan.sl ||
+    input.smartFibInvalidationPrice ||
+    (direction === "LONG" ? candidateEntry - riskDistance : candidateEntry + riskDistance);
 
-  const smartFibReason = smartFibEval.mapValid 
-    ? `Smart Fib zone ${smartFibEval.zoneState} · quality ${Math.round((input.smartFibSwingQualityScore || 0))}% · range ${input.smartFibRangeQuality || "UNKNOWN"}`
+  const candidateTp1 =
+    input.signalPlan.tp1 ||
+    (direction === "LONG" ? candidateEntry + riskDistance * 1.25 : candidateEntry - riskDistance * 1.25);
+
+  const candidateTp2 =
+    input.signalPlan.tp2 ||
+    (direction === "LONG" ? candidateEntry + riskDistance * 2.0 : candidateEntry - riskDistance * 2.0);
+
+  const candidateTp3 =
+    input.signalPlan.tp3 ||
+    (direction === "LONG" ? candidateEntry + riskDistance * 3.0 : candidateEntry - riskDistance * 3.0);
+
+  const candidateInvalidation =
+    direction === "LONG"
+      ? Math.min(candidateSl, input.structureState.lastSwingLow || candidateSl)
+      : direction === "SHORT"
+        ? Math.max(candidateSl, input.structureState.lastSwingHigh || candidateSl)
+        : null;
+
+  const showTradeLevels = phase === "EXECUTE" || phase === "MANAGE";
+
+  const outputEntry = showTradeLevels ? candidateEntry : null;
+  const outputSl = showTradeLevels ? candidateSl : null;
+  const outputTp1 = showTradeLevels ? candidateTp1 : null;
+  const outputTp2 = showTradeLevels ? candidateTp2 : null;
+  const outputTp3 = showTradeLevels ? candidateTp3 : null;
+  const outputInvalidation = showTradeLevels
+    ? candidateInvalidation
+    : input.smartFibInvalidationPrice || null;
+
+  const smartFibInfo = smartFibEval.mapValid
+    ? ` · Smart Fib ${smartFibEval.zoneState} · ${input.smartFibSetupType}`
+    : "";
+
+  const action =
+    phase === "EXECUTE"
+      ? `ENTER NOW ${direction}: Smart Fib ${input.smartFibSetupType} approved by Decision Brain${smartFibInfo}.`
+      : phase === "VALIDATED"
+        ? `WAIT CONFIRMATION ${direction}: Smart Fib owns direction${smartFibInfo}, but execution is waiting for cleaner trigger/risk.`
+        : phase === "SPAWNED"
+          ? `EARLY WATCH ${direction}: Smart Fib bias active${smartFibInfo}, setup not mature enough for execution.`
+          : phase === "FILTERED"
+            ? `FILTERED: ${
+                smartFibEval.confirmationConflict || confirmationConflict
+                  ? smartFibEval.blockedReason || `Radar/confirmation conflicts with Smart Fib ${input.smartFibSetupType}`
+                  : institutionalPrecision.reason
+              }`
+            : smartFibMapOnly
+              ? `Smart Fib map only. Hunting direction ${direction}. Waiting for price to reach 0.882 / 0.941 / 0.65 / 0.618.`
+              : "Scan only. No Smart Fib execution decision yet.";
+
+  const smartFibReason = smartFibEval.mapValid
+    ? `Smart Fib ${smartFibEval.zoneState} · map ${input.smartFibSetupType || "WAITING"} · hunting direction ${
+        smartFibDirection || "NONE"
+      } · quality ${Math.round(input.smartFibSwingQualityScore || 0)}% · range ${
+        input.smartFibRangeQuality || "UNKNOWN"
+      }${smartFibEval.blockedReason ? ` · ${smartFibEval.blockedReason}` : ""}`
     : smartFibEval.blockedReason;
-  const reason = [institutionalPrecision.reason, smartFibReason, input.structureState.summary, input.liquidityState.summary, input.triggerValidation.summary, input.signalPlan.reason, proSignal ? "Elite pro signal conditions detected." : "Waiting for stronger institutional alignment."].filter(Boolean).join(" ");
+
+  const reason = [
+    smartFibReason,
+    institutionalPrecision.reason,
+    input.structureState.summary,
+    input.liquidityState.summary,
+    input.triggerValidation.summary,
+    input.signalPlan.reason,
+    proSignal ? "Elite pro signal conditions detected." : "Waiting for stronger Decision Brain approval.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   const id = `${input.timeframe}-${direction || "WAIT"}-${phase}-${time}`;
 
   return {
@@ -432,32 +794,41 @@ export function buildRawDecisionPlan(input: DecisionEngineInput): { institutiona
       timeframe: input.timeframe,
       mode:
         input.tradeModeSelection === "AUTO"
-          ? (["1m", "3m", "5m", "15m"].includes(input.timeframe) ? "SCALP" : "SWING")
+          ? ["1m", "3m", "5m", "15m"].includes(input.timeframe)
+            ? "SCALP"
+            : "SWING"
           : input.tradeModeSelection,
       phase,
       direction,
       confidence: input.signalPlan.confidence,
       quality,
       risk: input.signalPlan.risk,
-      entry,
-      sl,
-      tp1,
-      tp2,
-      tp3,
+      entry: outputEntry,
+      sl: outputSl,
+      tp1: outputTp1,
+      tp2: outputTp2,
+      tp3: outputTp3,
       trigger: input.structureState.event,
       structure: input.structureState.bias,
       liquidity: input.liquidityState.bias,
       triggerQuality: input.triggerValidation.quality,
       managementAction: "WAIT",
       proSignal,
-      invalidation,
+      invalidation: outputInvalidation,
       action,
       reason,
       createdAt: Date.now(),
-      expiresAt: input.decisionSettings.holdBars > 0 ? Date.now() + input.decisionSettings.holdBars * (TF_SECONDS[input.timeframe] || 300) * 1000 : null,
+      expiresAt:
+        input.decisionSettings.holdBars > 0
+          ? Date.now() +
+            input.decisionSettings.holdBars * (TF_SECONDS[input.timeframe] || 300) * 1000
+          : null,
       markerTime: input.signalPlan.markerTime || time,
-      shouldMark: !institutionalPrecision.hardConflict && (phase === "VALIDATED" || phase === "EXECUTE" || (phase === "SPAWNED" && quality >= 68)),
+      shouldMark:
+        !institutionalPrecision.hardConflict &&
+        !confirmationConflict &&
+        !smartFibEval.confirmationConflict &&
+        (phase === "VALIDATED" || phase === "EXECUTE" || (phase === "SPAWNED" && quality >= 68)),
     },
   };
 }
-
