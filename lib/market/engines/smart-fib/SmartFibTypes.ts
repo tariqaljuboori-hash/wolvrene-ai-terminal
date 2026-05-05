@@ -130,10 +130,12 @@ export interface SmartFibTrade {
   status: "ACTIVE" | "CLOSED_TP" | "CLOSED_SL";
 }
 
-export interface SmartFibTradeLevels {
+export type SmartFibTradeLevels = {
   entry: number;
   sl: number;
   tp1: number;
-  tp2?: number;
-  tp3?: number;
-}
+  tp2: number;
+  tp3: number;
+  zone: string;
+  invalidation?: number;
+};

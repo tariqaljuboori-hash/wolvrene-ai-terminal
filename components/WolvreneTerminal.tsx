@@ -1843,10 +1843,13 @@ const impulseBoost =
 
     // RADAR: provides confirmation/filtering
     const radarState = marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE");
-    const radarBias = marketRadarIntelligence?.bias ?? "UNKNOWN";
-    const radarDirection = radarBias === "BULLISH_REACTION" || radarBias === "BULLISH" ? "LONG" :
-                          radarBias === "BEARISH_REACTION" || radarBias === "BEARISH" ? "SHORT" : 
-                          null;
+    const radarBias = String(marketRadarIntelligence?.bias ?? "UNKNOWN").toUpperCase();
+const radarDirection =
+  radarBias.includes("BULLISH") || radarBias.includes("LONG")
+    ? "LONG"
+    : radarBias.includes("BEARISH") || radarBias.includes("SHORT")
+      ? "SHORT"
+      : null;
 
     // ALIGNMENT: Smart Fib primary + Radar confirmation
     let alignmentStatus: "SMART_FIB_WAITING" | "RADAR_WAITING" | "EXECUTABLE_ALIGNMENT" | "REACTION_ONLY" | "CONFLICT" = "SMART_FIB_WAITING";
@@ -2714,19 +2717,19 @@ const impulseBoost =
       radarGate.smartFibExecutable;
 
     const displayEntry = activeTrade ? selectedActiveOrder?.entry ?? null : 
-                        smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.entry :
+                        smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.entry :
                         hasRealSignal ? (decisionPlan.entry || signalPlan.entry) : null;
     const displaySL = activeTrade ? selectedActiveOrder?.sl ?? null : 
-                     smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.sl :
+                     smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.sl :
                      hasRealSignal ? (decisionPlan.sl || signalPlan.sl) : null;
     const displayTP1 = activeTrade ? selectedActiveOrder?.tps?.[0]?.price ?? null : 
-                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.tp1 :
+                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.tp1 :
                       hasRealSignal ? (decisionPlan.tp1 || signalPlan.tp1) : null;
     const displayTP2 = activeTrade ? selectedActiveOrder?.tps?.[1]?.price ?? null : 
-                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.tp2 :
+                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.tp2 :
                       hasRealSignal ? (decisionPlan.tp2 || signalPlan.tp2) : null;
     const displayTP3 = activeTrade ? selectedActiveOrder?.tps?.[2]?.price ?? null : 
-                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.tp3 :
+                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.tp3 :
                       hasRealSignal ? (decisionPlan.tp3 || signalPlan.tp3) : null;
 
     const tpHitCount = orders.reduce((sum, order) => sum + order.tps.filter((tp) => tp.hit).length, 0);
@@ -2920,18 +2923,20 @@ const impulseBoost =
     });
     
     if (payload && externalAlertSettings.discordWebhook) {
-      sendSmartFibDiscordSignal({
-        webhook: externalAlertSettings.discordWebhook,
-        payload,
-        cooldownMs: 120000,
-      }).then(result => {
-        if (result.sent) {
-          console.log("[Wolvrene] Smart Fib Discord signal sent:", key);
-        }
-      }).catch(err => {
-        console.error("[Wolvrene] Discord send error:", err);
-      });
-    }
+  sendSmartFibDiscordSignal({
+    webhook: externalAlertSettings.discordWebhook,
+    payload,
+    cooldownMs: 120000,
+  })
+    .then((result: { sent?: boolean; error?: string; message?: string; status?: string }) => {
+      if (result.sent) {
+        console.log("[Wolvrene] Smart Fib Discord signal sent:", key);
+      }
+    })
+    .catch((err: unknown) => {
+      console.error("[Wolvrene] Discord send error:", err);
+    });
+}
   }, [smartFibContext.mapState, smartFibContext.tradeLevels?.entry, radarGate.alignmentStatus, selectedSymbol, timeframe, livePrice, externalAlertSettings.enabled, externalAlertSettings.discordWebhook, externalAlertSettings.autoDiscordSignals]);
 
 
