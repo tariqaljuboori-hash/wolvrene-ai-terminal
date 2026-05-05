@@ -18,6 +18,38 @@ export class SmartFibEngine {
 
   updateSettings(newSettings: Partial<typeof SMART_FIB_DEFAULTS>): void {
     this.settings = { ...this.settings, ...newSettings };
+
+    for (const context of this.contexts.values()) {
+      this.resetContextMap(context);
+
+      if (context.enabled) {
+        context.mapState = "WAITING_FOR_CANDLES";
+      }
+    }
+  }
+
+  private resetContextMap(context: SmartFibContext): void {
+    context.setupType = "WAITING";
+    context.swingHigh = undefined;
+    context.swingLow = undefined;
+    context.swingHighIndex = undefined;
+    context.swingLowIndex = undefined;
+    context.swingHighPivot = undefined;
+    context.swingLowPivot = undefined;
+    context.activeRange = undefined;
+    context.activeFibLevels = [];
+    context.confirmedPivots = [];
+    context.activeMap = undefined;
+    context.mapCandidates = [];
+    context.invalidationReason = undefined;
+    context.reanchorReason = undefined;
+    context.fallbackReason = undefined;
+    context.atr = undefined;
+    context.rangeQuality = undefined;
+    context.activeBoxes = [];
+    context.currentSignal = undefined;
+    context.tradeLevels = undefined;
+    context.dashboardSummary = "Smart Fib rebuilding...";
   }
 
   private getContextKey(symbol: string, timeframe: string): string {
@@ -76,20 +108,47 @@ export class SmartFibEngine {
   processCandles(symbol: string, timeframe: string, newCandles: Candle[]): SmartFibSignal[] {
     const context = this.getOrCreateContext(symbol, timeframe);
     if (!context.enabled) return [];
+    if (!newCandles.length) return [];
 
     const key = this.getContextKey(symbol, timeframe);
+    const existingCandles = this.candles.get(key) || [];
 
-    if (!this.candles.has(key)) {
-      this.candles.set(key, []);
+    const candleMap = new Map<number, Candle>();
+
+    for (const candle of existingCandles) {
+      candleMap.set(Number(candle.time), candle);
     }
 
-    const contextCandles = this.candles.get(key)!;
-    contextCandles.push(...newCandles);
+    for (const candle of newCandles) {
+      candleMap.set(Number(candle.time), candle);
+    }
+
+    const mergedCandles = Array.from(candleMap.values())
+      .filter(
+        (candle) =>
+          Number.isFinite(Number(candle.time)) &&
+          Number.isFinite(candle.open) &&
+          Number.isFinite(candle.high) &&
+          Number.isFinite(candle.low) &&
+          Number.isFinite(candle.close)
+      )
+      .sort((a, b) => Number(a.time) - Number(b.time));
 
     const maxCandles = Math.max(500, this.settings.maxMapAgeBars * 4);
-    if (contextCandles.length > maxCandles) {
-      this.candles.set(key, contextCandles.slice(-maxCandles));
+    const trimmedCandles = mergedCandles.slice(-maxCandles);
+
+    const previousLength = existingCandles.length;
+    const shouldFullRebuild =
+      previousLength === 0 ||
+      context.confirmedPivots.length === 0 ||
+      context.activeFibLevels.length === 0 ||
+      newCandles.length > 5;
+
+    if (shouldFullRebuild) {
+      return this.rebuildFromCandles(context, key, trimmedCandles);
     }
+
+    this.candles.set(key, trimmedCandles);
 
     const signals: SmartFibSignal[] = [];
 
@@ -97,6 +156,41 @@ export class SmartFibEngine {
       const candleSignals = this.processCandle(context, candle);
       signals.push(...candleSignals);
     }
+
+    return signals;
+  }
+
+  private rebuildFromCandles(
+    context: SmartFibContext,
+    key: string,
+    candles: Candle[]
+  ): SmartFibSignal[] {
+    const wasEnabled = context.enabled;
+    const symbol = context.symbol;
+    const timeframe = context.timeframe;
+    const lastSignals = context.lastSignals;
+
+    this.resetContextMap(context);
+
+    context.enabled = wasEnabled;
+    context.symbol = symbol;
+    context.timeframe = timeframe;
+    context.lastSignals = lastSignals;
+    context.mapState = candles.length ? "WAITING_FOR_SWING_PAIR" : "WAITING_FOR_CANDLES";
+
+    const signals: SmartFibSignal[] = [];
+    const runningCandles: Candle[] = [];
+
+    for (const candle of candles) {
+      runningCandles.push(candle);
+      this.candles.set(key, [...runningCandles]);
+
+      const candleSignals = this.processCandle(context, candle);
+      signals.push(...candleSignals);
+    }
+
+    this.candles.set(key, candles);
+    this.updateDashboardSummary(context);
 
     return signals;
   }
@@ -136,18 +230,25 @@ export class SmartFibEngine {
   }
 
   private updateATR(context: SmartFibContext, candle: Candle): void {
+    const trueRange = Math.max(
+      Math.abs(candle.high - candle.low),
+      Math.abs(candle.high - candle.close),
+      Math.abs(candle.low - candle.close),
+      candle.close * 0.001
+    );
+
     if (!context.atr) {
-      context.atr = Math.max(Math.abs(candle.high - candle.low), candle.close * 0.001);
+      context.atr = trueRange;
     } else {
-      context.atr = (context.atr * 13 + Math.abs(candle.high - candle.low)) / 14;
+      context.atr = (context.atr * 13 + trueRange) / 14;
     }
   }
 
   private updatePivotDetection(context: SmartFibContext): void {
     const key = this.getContextKey(context.symbol, context.timeframe);
     const contextCandles = this.candles.get(key) || [];
-    const pivotLeft = this.settings.pivotLeft;
-    const pivotRight = this.settings.pivotRight;
+    const pivotLeft = Math.max(1, Math.floor(this.settings.pivotLeft));
+    const pivotRight = Math.max(1, Math.floor(this.settings.pivotRight));
     const requiredCandles = pivotLeft + pivotRight + 1;
 
     if (contextCandles.length < requiredCandles) {
@@ -159,6 +260,7 @@ export class SmartFibEngine {
     if (candidateIndex < pivotLeft) return;
 
     const candidate = contextCandles[candidateIndex];
+    if (!candidate) return;
 
     let isSwingHigh = true;
     let isSwingLow = true;
@@ -169,11 +271,11 @@ export class SmartFibEngine {
       const comparisonCandle = contextCandles[i];
       if (!comparisonCandle) continue;
 
-      if (comparisonCandle.high > candidate.high) {
+      if (comparisonCandle.high >= candidate.high) {
         isSwingHigh = false;
       }
 
-      if (comparisonCandle.low < candidate.low) {
+      if (comparisonCandle.low <= candidate.low) {
         isSwingLow = false;
       }
 
@@ -184,7 +286,7 @@ export class SmartFibEngine {
       this.addPivot(context, {
         type: "HIGH",
         index: candidateIndex,
-        time: candidate.time,
+        time: Number(candidate.time),
         price: candidate.high,
         confirmedAtIndex: contextCandles.length - 1,
       });
@@ -194,13 +296,13 @@ export class SmartFibEngine {
       this.addPivot(context, {
         type: "LOW",
         index: candidateIndex,
-        time: candidate.time,
+        time: Number(candidate.time),
         price: candidate.low,
         confirmedAtIndex: contextCandles.length - 1,
       });
     }
 
-    const maxPivots = 40;
+    const maxPivots = 80;
     if (context.confirmedPivots.length > maxPivots) {
       context.confirmedPivots = context.confirmedPivots.slice(-maxPivots);
     }
@@ -276,7 +378,7 @@ export class SmartFibEngine {
 
   private buildMapCandidates(context: SmartFibContext, candle: Candle): SmartFibMapCandidate[] {
     const candidates: SmartFibMapCandidate[] = [];
-    const recentPivots = context.confirmedPivots.slice(-16);
+    const recentPivots = context.confirmedPivots.slice(-24);
     const currentIndex = this.getCandlesForContext(context).length - 1;
 
     for (let i = 0; i < recentPivots.length - 1; i++) {
@@ -290,14 +392,14 @@ export class SmartFibEngine {
         let swingLow: SmartFibPivot;
         let setupType: "LONG_MAP" | "SHORT_MAP";
 
-        if (pivot1.type === "HIGH" && pivot2.type === "LOW") {
-          swingHigh = pivot1;
-          swingLow = pivot2;
-          setupType = "SHORT_MAP";
-        } else if (pivot1.type === "LOW" && pivot2.type === "HIGH") {
+        if (pivot1.type === "LOW" && pivot2.type === "HIGH") {
           swingLow = pivot1;
           swingHigh = pivot2;
           setupType = "LONG_MAP";
+        } else if (pivot1.type === "HIGH" && pivot2.type === "LOW") {
+          swingHigh = pivot1;
+          swingLow = pivot2;
+          setupType = "SHORT_MAP";
         } else {
           continue;
         }
@@ -306,7 +408,7 @@ export class SmartFibEngine {
         if (range <= 0) continue;
 
         const atr = context.atr || range * 0.02;
-        const referencePrice = candle.close || swingHigh.price;
+        const referencePrice = Math.max(candle.close || swingHigh.price, 0.000001);
 
         const rangeValid =
           range >= atr * this.settings.minSwingRangeAtr &&
@@ -392,7 +494,12 @@ export class SmartFibEngine {
   }
 
   private generateFibLevels(context: SmartFibContext): void {
-    if (!context.activeMap || !context.activeRange || !context.swingHigh || !context.swingLow) {
+    if (
+      !context.activeMap ||
+      !context.activeRange ||
+      context.swingHigh === undefined ||
+      context.swingLow === undefined
+    ) {
       context.activeFibLevels = [];
       return;
     }
@@ -558,9 +665,9 @@ export class SmartFibEngine {
 
     if (!context.activeFibLevels.length) return signals;
     if (context.mapState === "DISABLED" || context.mapState === "INVALIDATED") return signals;
-    if (context.rangeQuality === "COMPRESSED" || context.rangeQuality === "TOO_SMALL") {
-      return signals;
-    }
+    if (context.rangeQuality === "TOO_SMALL") {
+  return signals;
+}
 
     for (const fibLevel of context.activeFibLevels) {
       if (!fibLevel.enabled) continue;
