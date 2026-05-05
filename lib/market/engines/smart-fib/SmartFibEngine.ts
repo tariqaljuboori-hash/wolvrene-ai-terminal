@@ -17,13 +17,47 @@ export class SmartFibEngine {
   private lastSignalTime: Map<string, number> = new Map();
 
   updateSettings(newSettings: Partial<typeof SMART_FIB_DEFAULTS>): void {
+    const oldSettings = { ...this.settings };
     this.settings = { ...this.settings, ...newSettings };
 
-    for (const context of this.contexts.values()) {
-      this.resetContextMap(context);
+    // List of settings that require map rebuild
+    const rebuildTriggers = [
+      "pivotLeft",
+      "pivotRight",
+      "minSwingRangeAtr",
+      "minSwingRangePercent",
+      "maxMapAgeBars",
+      "protectDominantMap",
+      "enableFallback",
+      "smartFibSwingSelectionMode",
+    ];
 
-      if (context.enabled) {
-        context.mapState = "WAITING_FOR_CANDLES";
+    const shouldRebuild = rebuildTriggers.some(
+      (key) => oldSettings[key as keyof typeof SMART_FIB_DEFAULTS] !== newSettings[key as keyof typeof SMART_FIB_DEFAULTS]
+    );
+
+    for (const context of this.contexts.values()) {
+      if (shouldRebuild) {
+        // Trigger full rebuild from stored candles
+        const key = this.getContextKey(context.symbol, context.timeframe);
+        const storedCandles = this.candles.get(key) || [];
+        
+        this.resetContextMap(context);
+        context.enabled = true;
+        
+        if (storedCandles.length > 0) {
+          context.mapState = "WAITING_FOR_CANDLES";
+          // Will trigger rebuild on next processCandle call or manually
+          this.rebuildFromCandles(context, key, storedCandles);
+        } else {
+          context.mapState = "WAITING_FOR_CANDLES";
+        }
+      } else {
+        // Just reset the map without full rebuild
+        this.resetContextMap(context);
+        if (context.enabled) {
+          context.mapState = "WAITING_FOR_CANDLES";
+        }
       }
     }
   }
@@ -456,21 +490,78 @@ export class SmartFibEngine {
       return;
     }
 
+    // RECENCY-FIRST SORTING: Latest valid pair wins
+    // Sort by:
+    // 1. Candidate source (RECENT_ADJACENT highest priority, then RECENT_NON_ADJACENT, then DOMINANT_FALLBACK)
+    // 2. Age of second pivot (newer first)
+    // 3. Quality as tiebreaker
     candidates.sort((a, b) => {
-      const qualityDiff = b.quality - a.quality;
-      if (Math.abs(qualityDiff) > 5) return qualityDiff;
-      return a.age - b.age;
+      const sourceOrder = { "RECENT_ADJACENT": 0, "RECENT_NON_ADJACENT": 1, "DOMINANT_FALLBACK": 2 };
+      const aSourceOrder = sourceOrder[a.source || "DOMINANT_FALLBACK"] ?? 2;
+      const bSourceOrder = sourceOrder[b.source || "DOMINANT_FALLBACK"] ?? 2;
+
+      if (aSourceOrder !== bSourceOrder) return aSourceOrder - bSourceOrder;
+
+      // Among same source, newer (lower age) wins
+      if (a.age !== b.age) return a.age - b.age;
+
+      // Tiebreaker: higher quality
+      return b.quality - a.quality;
     });
 
+    // DEV MODE: Log top candidates
+    if (process.env.NODE_ENV !== "production" && candidates.length > 0) {
+      const topCandidates = candidates.slice(0, 5);
+      console.debug(`[SmartFib ${context.symbol}_${context.timeframe}] Top ${topCandidates.length} candidates:`, 
+        topCandidates.map(c => ({
+          setup: c.setupType,
+          source: c.source || "UNKNOWN",
+          range: c.range.toFixed(2),
+          age: c.age,
+          quality: c.quality.toFixed(1),
+          swingHigh: { price: c.swingHigh.price.toFixed(2), index: c.swingHigh.index },
+          swingLow: { price: c.swingLow.price.toFixed(2), index: c.swingLow.index },
+        }))
+      );
+    }
+
     const bestCandidate = candidates[0];
+    const mode = context.settings?.smartFibSwingSelectionMode ?? "LATEST_VALID";
 
-    const needsChange =
-      !context.activeMap ||
-      context.activeMap.swingHigh.index !== bestCandidate.swingHigh.index ||
-      context.activeMap.swingLow.index !== bestCandidate.swingLow.index ||
-      context.activeMap.setupType !== bestCandidate.setupType;
+    // Determine if we need to change the active map
+    if (!context.activeMap) {
+      // No active map, apply the best candidate
+      this.applyMapCandidate(context, bestCandidate);
+      return;
+    }
 
-    if (needsChange) {
+    const sameMap =
+      context.activeMap.swingHigh.index === bestCandidate.swingHigh.index &&
+      context.activeMap.swingLow.index === bestCandidate.swingLow.index &&
+      context.activeMap.setupType === bestCandidate.setupType;
+
+    if (sameMap) {
+      // Same pair, no change needed
+      return;
+    }
+
+    // Map change needed - apply based on selection mode
+    if (mode === "LATEST_VALID") {
+      // Latest valid pair always wins
+      this.applyMapCandidate(context, bestCandidate);
+    } else if (mode === "DOMINANT_PROTECTED") {
+      // Older dominant map can stay only if clearly stronger and not stale
+      const activeSecondIndex = Math.max(context.activeMap.swingHigh.index, context.activeMap.swingLow.index);
+      const bestSecondIndex = Math.max(bestCandidate.swingHigh.index, bestCandidate.swingLow.index);
+
+      const isActiveStale = context.activeMap.age && context.activeMap.age > this.settings.maxMapAgeBars * 0.6;
+      const isActiveDominantlyStronger = context.activeMap.quality >= bestCandidate.quality + 12 &&
+        context.activeMap.range >= bestCandidate.range * 1.6;
+
+      if (isActiveStale || !isActiveDominantlyStronger) {
+        this.applyMapCandidate(context, bestCandidate);
+      }
+    } else {
       this.applyMapCandidate(context, bestCandidate);
     }
 
@@ -479,79 +570,193 @@ export class SmartFibEngine {
 
   private buildMapCandidates(context: SmartFibContext, candle: Candle): SmartFibMapCandidate[] {
     const candidates: SmartFibMapCandidate[] = [];
-    const recentPivots = context.confirmedPivots.slice(-24);
+    const pivots = context.confirmedPivots;
     const currentIndex = this.getCandlesForContext(context).length - 1;
     const contextCandles = this.getCandlesForContext(context);
 
-    for (let i = 0; i < recentPivots.length - 1; i++) {
-      for (let j = i + 1; j < recentPivots.length; j++) {
-        const pivot1 = recentPivots[i];
-        const pivot2 = recentPivots[j];
+    if (pivots.length < 2) return candidates;
 
-        if (pivot1.type === pivot2.type) continue;
+    // PHASE 1: Recent adjacent opposite pivots (highest priority)
+    // These are consecutive opposite-type pivots near the end
+    for (let i = pivots.length - 1; i >= 1; i--) {
+      const first = pivots[i - 1];
+      const second = pivots[i];
 
-        let swingHigh: SmartFibPivot;
-        let swingLow: SmartFibPivot;
-        let setupType: "LONG_MAP" | "SHORT_MAP";
-
-        if (pivot1.type === "LOW" && pivot2.type === "HIGH") {
-          swingLow = pivot1;
-          swingHigh = pivot2;
-          setupType = "LONG_MAP";
-        } else if (pivot1.type === "HIGH" && pivot2.type === "LOW") {
-          swingHigh = pivot1;
-          swingLow = pivot2;
-          setupType = "SHORT_MAP";
-        } else {
-          continue;
+      if (first.type !== second.type) {
+        const candidate = this.buildCandidate(first, second, "RECENT_ADJACENT", currentIndex, contextCandles, candle);
+        if (candidate) {
+          candidates.push(candidate);
         }
+      }
+    }
 
-        const range = swingHigh.price - swingLow.price;
-        if (range <= 0) continue;
+    // PHASE 2: Recent non-adjacent opposite pivots
+    // Find nearest opposite pivot to each recent pivot
+    const recentWindow = Math.min(24, pivots.length);
+    for (let i = pivots.length - 1; i >= 0; i--) {
+      const second = pivots[i];
+      let nearestOpposite: SmartFibPivot | undefined;
+      let nearestDistance = Infinity;
 
-        const atr = context.atr || range * 0.02;
-        const referencePrice = Math.max(candle.close || swingHigh.price, 0.000001);
+      for (let j = i - 1; j >= 0; j--) {
+        const candidate = pivots[j];
+        if (candidate.type !== second.type) {
+          const distance = i - j;
+          if (distance < nearestDistance && distance >= 2) {
+            nearestDistance = distance;
+            nearestOpposite = candidate;
+          }
+        }
+      }
 
-        const rangeValid =
-          range >= atr * this.settings.minSwingRangeAtr &&
-          range >= referencePrice * this.settings.minSwingRangePercent;
-
-        if (!rangeValid) continue;
-
-        const age = Math.max(0, currentIndex - Math.max(swingHigh.index, swingLow.index));
-        if (age > this.settings.maxMapAgeBars) continue;
-
-        // Enhanced quality scoring
-        const quality = this.calculateEnhancedMapQuality(
-          range,
-          atr,
-          age,
-          swingHigh,
-          swingLow,
-          currentIndex,
-          contextCandles,
-          candle,
-          setupType
-        );
-
-        if (!this.isCandidateInvalidated(
-          { swingHigh, swingLow, range, setupType, quality, age, invalidated: false },
-          candle
+      if (nearestOpposite && nearestDistance <= recentWindow) {
+        const candidate = this.buildCandidate(nearestOpposite, second, "RECENT_NON_ADJACENT", currentIndex, contextCandles, candle);
+        if (candidate && !candidates.some(c =>
+          c.swingHigh.index === candidate.swingHigh.index &&
+          c.swingLow.index === candidate.swingLow.index
         )) {
-          candidates.push({
-            swingHigh,
-            swingLow,
-            range,
-            setupType,
-            quality,
-            age,
-            invalidated: false,
-          });
+          candidates.push(candidate);
+        }
+      }
+    }
+
+    // PHASE 3: Dominant fallback (only if enabled or mode is DOMINANT_PROTECTED)
+    const mode = context.settings?.smartFibSwingSelectionMode ?? "LATEST_VALID";
+    if (context.settings?.enableFallback || mode === "DOMINANT_PROTECTED") {
+      const fallbackWindow = Math.min(16, pivots.length);
+      const fallbackPivots = pivots.slice(-fallbackWindow);
+
+      for (let i = 0; i < fallbackPivots.length - 1; i++) {
+        for (let j = i + 1; j < fallbackPivots.length; j++) {
+          const pivot1 = fallbackPivots[i];
+          const pivot2 = fallbackPivots[j];
+
+          if (pivot1.type !== pivot2.type) {
+            const candidate = this.buildCandidate(pivot1, pivot2, "DOMINANT_FALLBACK", currentIndex, contextCandles, candle);
+            if (candidate && !candidates.some(c =>
+              c.swingHigh.index === candidate.swingHigh.index &&
+              c.swingLow.index === candidate.swingLow.index
+            )) {
+              candidates.push(candidate);
+            }
+          }
         }
       }
     }
 
     return candidates;
+  }
+
+  private buildCandidate(
+    pivot1: SmartFibPivot,
+    pivot2: SmartFibPivot,
+    source: "RECENT_ADJACENT" | "RECENT_NON_ADJACENT" | "DOMINANT_FALLBACK",
+    currentIndex: number,
+    contextCandles: Candle[],
+    candle: Candle
+  ): SmartFibMapCandidate | undefined {
+    if (pivot1.type === pivot2.type) return undefined;
+
+    let swingHigh: SmartFibPivot;
+    let swingLow: SmartFibPivot;
+    let setupType: "LONG_MAP" | "SHORT_MAP";
+
+    if (pivot1.type === "LOW" && pivot2.type === "HIGH") {
+      swingLow = pivot1;
+      swingHigh = pivot2;
+      setupType = "LONG_MAP";
+    } else if (pivot1.type === "HIGH" && pivot2.type === "LOW") {
+      swingHigh = pivot1;
+      swingLow = pivot2;
+      setupType = "SHORT_MAP";
+    } else {
+      return undefined;
+    }
+
+    const range = swingHigh.price - swingLow.price;
+    if (range <= 0) return undefined;
+
+    const atr = Math.max(0.000001, this.getATR(contextCandles) || range * 0.02);
+    const referencePrice = Math.max(candle.close || swingHigh.price, 0.000001);
+
+    const rangeValid =
+      range >= atr * this.settings.minSwingRangeAtr &&
+      range >= referencePrice * this.settings.minSwingRangePercent;
+
+    if (!rangeValid) return undefined;
+
+    const age = Math.max(0, currentIndex - Math.max(swingHigh.index, swingLow.index));
+    if (age > this.settings.maxMapAgeBars) return undefined;
+
+    const quality = this.calculateRecencyFirstMapQuality(range, atr, age, source);
+
+    const candidate: SmartFibMapCandidate = {
+      swingHigh,
+      swingLow,
+      range,
+      setupType,
+      quality,
+      age,
+      invalidated: false,
+      source,
+    };
+
+    if (this.isCandidateInvalidated(candidate, candle)) {
+      return undefined;
+    }
+
+    return candidate;
+  }
+
+  private getATR(candles: Candle[]): number {
+    if (candles.length < 2) return 0;
+    let sumTR = 0;
+    const period = Math.min(14, candles.length);
+
+    for (let i = Math.max(0, candles.length - period); i < candles.length; i++) {
+      const candle = candles[i];
+      const prevClose = i > 0 ? candles[i - 1].close : candle.open;
+
+      const tr = Math.max(
+        candle.high - candle.low,
+        Math.abs(candle.high - prevClose),
+        Math.abs(candle.low - prevClose)
+      );
+
+      sumTR += tr;
+    }
+
+    return sumTR / period;
+  }
+
+  private calculateRecencyFirstMapQuality(
+    range: number,
+    atr: number,
+    age: number,
+    source: "RECENT_ADJACENT" | "RECENT_NON_ADJACENT" | "DOMINANT_FALLBACK"
+  ): number {
+    const rangeRatio = range / Math.max(atr, 0.000001);
+
+    // Base recency score: 55 points, -2.2 points per candle age
+    const recencyScore = Math.max(0, 55 - age * 2.2);
+
+    // Range quality score
+    const rangeScore =
+      rangeRatio >= 5 ? 25 :
+      rangeRatio >= 3 ? 20 :
+      rangeRatio >= 2 ? 15 :
+      rangeRatio >= 1 ? 10 : 0;
+
+    // Source bonus
+    const sourceScore =
+      source === "RECENT_ADJACENT" ? 14 :
+      source === "RECENT_NON_ADJACENT" ? 8 :
+      2;
+
+    // Stale penalty
+    const stalePenalty = age > this.settings.maxMapAgeBars * 0.6 ? 18 : 0;
+
+    return Math.max(0, Math.min(100, recencyScore + rangeScore + sourceScore - stalePenalty));
   }
 
   private getCandlesForContext(context: SmartFibContext): Candle[] {
@@ -587,9 +792,10 @@ export class SmartFibEngine {
     context.activeRange = candidate.range;
     context.swingQualityScore = candidate.quality;
     context.swingAgeCandles = Math.max(0, currentIndex - Math.max(candidate.swingHigh.index, candidate.swingLow.index));
+    context.selectedCandidateSource = candidate.source || "FIRST_BOOT";
     
     // Generate selection reason
-    context.swingSelectionReason = this.generateSelectionReason(candidate, context.swingAgeCandles || 0);
+    context.swingSelectionReason = this.generateSelectionReason(candidate, context.swingAgeCandles || 0, candidate.source);
     
     context.invalidationReason = undefined;
     context.fallbackReason = undefined;
@@ -598,31 +804,41 @@ export class SmartFibEngine {
     this.checkLevelCompression(context);
     // Note: closest level and zone state will be updated when processing candles with current price
 
-    if (context.rangeQuality === "COMPRESSED") {
-      context.mapState = "COMPRESSED_LEVELS";
-    } else if (context.rangeQuality === "TOO_SMALL") {
+    // PART M: Compression is a warning only, not a blocker
+    // TOO_SMALL blocks, COMPRESSED allows drawing but marks as warning
+    if (context.rangeQuality === "TOO_SMALL") {
       context.mapState = "RANGE_TOO_SMALL";
     } else {
+      // Map is valid regardless of compression warning
       context.mapState = candidate.setupType;
     }
   }
 
-  private generateSelectionReason(candidate: SmartFibMapCandidate, ageCandles: number): string {
-    const rangeRatio = candidate.range / (candidate.range * 0.02);
+  private generateSelectionReason(
+    candidate: SmartFibMapCandidate,
+    ageCandles: number,
+    source?: "RECENT_ADJACENT" | "RECENT_NON_ADJACENT" | "DOMINANT_FALLBACK"
+  ): string {
     const reasons: string[] = [];
 
-    if (candidate.quality >= 70) reasons.push("High quality swing");
-    else if (candidate.quality >= 50) reasons.push("Good swing pair");
-    else reasons.push("Valid swing pair");
+    // Source information
+    if (source === "RECENT_ADJACENT") reasons.push("Recent adjacent pivots");
+    else if (source === "RECENT_NON_ADJACENT") reasons.push("Recent non-adjacent pivots");
+    else if (source === "DOMINANT_FALLBACK") reasons.push("Dominant fallback");
+    else reasons.push("Latest valid");
 
-    if (ageCandles < 10) reasons.push("recently confirmed");
-    else if (ageCandles < 50) reasons.push("fresh structure");
-    else reasons.push("older reference");
+    // Quality level
+    if (candidate.quality >= 70) reasons.push("High quality");
+    else if (candidate.quality >= 50) reasons.push("Good quality");
+    else reasons.push("Valid quality");
 
-    if (rangeRatio >= 5) reasons.push("strong range");
-    else if (rangeRatio >= 3) reasons.push("good range");
+    // Age/freshness
+    if (ageCandles < 10) reasons.push("very recent");
+    else if (ageCandles < 50) reasons.push("fresh");
+    else if (ageCandles < 150) reasons.push("established");
+    else reasons.push("reference");
 
-    return reasons.join("; ");
+    return reasons.join(" | ");
   }
 
   private calculateMapQuality(range: number, atr: number, age: number): number {

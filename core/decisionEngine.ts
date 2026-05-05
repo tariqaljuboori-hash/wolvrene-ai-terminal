@@ -1,4 +1,5 @@
 import { TF_SECONDS } from "@/lib/bitget";
+import type { SmartFibZoneState } from "@/lib/market/engines/smart-fib/SmartFibTypes";
 
 export type DecisionSignalDirection = "LONG" | "SHORT" | null;
 export type DecisionPhase =
@@ -163,13 +164,7 @@ export type DecisionEngineInput = {
   smartFibSwingSelectionReason?: string;
   smartFibSwingAgeCandles?: number;
   smartFibFibLevelCount?: number;
-  smartFibCurrentZoneState?:
-    | "NONE"
-    | "SILVER_WATCH"
-    | "SILVER_ACTIVE"
-    | "SNIPER_WATCH"
-    | "SNIPER_ACTIVE"
-    | "SNIPER_CONFLICT";
+  smartFibCurrentZoneState?: SmartFibZoneState;
   smartFibClosestLevelDistance?: number;
   smartFibClosestLevelDistanceAtr?: number;
   smartFibClosestLevelPrice?: number;
@@ -177,15 +172,6 @@ export type DecisionEngineInput = {
   smartFibClosestLevelZoneType?: "SNIPER" | "SILVER" | "SUPPORT" | "NONE";
   smartFibInvalidationPrice?: number;
 };
-
-type SmartFibZoneState =
-  | "NONE"
-  | "MAP_ONLY"
-  | "SILVER_WATCH"
-  | "SILVER_ACTIVE"
-  | "SNIPER_WATCH"
-  | "SNIPER_ACTIVE"
-  | "SNIPER_CONFLICT";
 
 type SmartFibEvaluation = {
   mapValid: boolean;

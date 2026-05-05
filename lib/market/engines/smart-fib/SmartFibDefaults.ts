@@ -5,8 +5,9 @@ export const SMART_FIB_DEFAULTS = {
   minSwingRangeAtr: 0.5,
   minSwingRangePercent: 0.001,
   maxMapAgeBars: 200,
-  protectDominantMap: true,
+  protectDominantMap: false,
   enableFallback: true,
+  smartFibSwingSelectionMode: "LATEST_VALID" as "LATEST_VALID" | "DOMINANT_PROTECTED",
 
   // Invalidation
   invalidationMode: "ATR_BUFFER" as "ATR_BUFFER" | "PERCENT_BUFFER" | "TICK_BUFFER",

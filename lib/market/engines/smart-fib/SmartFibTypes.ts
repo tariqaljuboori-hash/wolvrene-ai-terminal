@@ -1,5 +1,26 @@
 import type { SMART_FIB_DEFAULTS } from "./SmartFibDefaults";
 
+/**
+ * Unified Smart Fib zone state type used consistently throughout the system.
+ * - NONE: No zone activity
+ * - MAP_ONLY: Map valid but price not near important fib levels
+ * - SILVER_WATCH: Price approaching 0.65 / 0.618 levels
+ * - SILVER_ACTIVE: Price at 0.65 / 0.618 levels (within range)
+ * - SNIPER_WATCH: Price approaching 0.882 / 0.941 levels
+ * - SNIPER_ACTIVE: Price at 0.882 / 0.941 levels (within range)
+ * - SNIPER_CONFLICT: Price near sniper levels but conflicting with structure
+ * - SILVER_CONFLICT: Price near silver levels but conflicting with structure
+ */
+export type SmartFibZoneState =
+  | "NONE"
+  | "MAP_ONLY"
+  | "SILVER_WATCH"
+  | "SILVER_ACTIVE"
+  | "SILVER_CONFLICT"
+  | "SNIPER_WATCH"
+  | "SNIPER_ACTIVE"
+  | "SNIPER_CONFLICT";
+
 export interface SmartFibPivot {
   type: "HIGH" | "LOW";
   index: number;
@@ -17,6 +38,7 @@ export interface SmartFibMapCandidate {
   quality: number;
   age: number;
   invalidated: boolean;
+  source?: "RECENT_ADJACENT" | "RECENT_NON_ADJACENT" | "DOMINANT_FALLBACK";
 }
 
 export interface SmartFibLevel {
@@ -129,6 +151,7 @@ export interface SmartFibContext {
 
   activeMap?: SmartFibMapCandidate;
   mapCandidates: SmartFibMapCandidate[];
+  selectedCandidateSource?: "RECENT_ADJACENT" | "RECENT_NON_ADJACENT" | "DOMINANT_FALLBACK" | "FIRST_BOOT";
 
   invalidationReason?: string;
   reanchorReason?: string;
@@ -137,7 +160,7 @@ export interface SmartFibContext {
   atr?: number;
   rangeQuality?: "TOO_SMALL" | "COMPRESSED" | "GOOD";
 
-  currentZoneState?: "NONE" | "SILVER_WATCH" | "SILVER_ACTIVE" | "SNIPER_WATCH" | "SNIPER_ACTIVE" | "SNIPER_CONFLICT";
+  currentZoneState?: SmartFibZoneState;
   closestImportantLevel?: SmartFibLevel & { distance: number; distanceAtr: number };
 
   activeBoxes: SmartFibBox[];
