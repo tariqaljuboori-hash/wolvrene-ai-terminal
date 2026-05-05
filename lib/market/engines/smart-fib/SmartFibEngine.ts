@@ -1002,9 +1002,12 @@ export class SmartFibEngine {
     }
 
     const pixelSpacingEstimate = minSpacing / Math.max(context.atr * 0.01, 0.000001);
-
-    context.rangeQuality =
-      pixelSpacingEstimate < this.settings.minVisualLevelSpacingPx ? "COMPRESSED" : "GOOD";
+    const rangeAtrRatio = context.activeRange / Math.max(context.atr, 0.000001);
+    if (rangeAtrRatio >= 2) {
+      context.rangeQuality = "GOOD";
+      return;
+    }
+    context.rangeQuality = pixelSpacingEstimate < this.settings.minVisualLevelSpacingPx ? "COMPRESSED" : "GOOD";
   }
 
   private checkInvalidation(context: SmartFibContext, candle: Candle): void {
@@ -1433,10 +1436,6 @@ export class SmartFibEngine {
 
     if (context.mapState === "INVALIDATED") {
       return { executable: false, reason: "Smart Fib swing invalidated" };
-    }
-
-    if (context.rangeQuality === "COMPRESSED") {
-      return { executable: false, reason: "Smart Fib levels too compressed for reliable entry" };
     }
 
     if (context.rangeQuality === "TOO_SMALL") {

@@ -11,6 +11,8 @@ interface SmartFibOverlayProps {
   context: SmartFibContext;
   chartApi: IChartApi | null;
   candleSeries: ISeriesApi<"Candlestick"> | null;
+  showChartDebug?: boolean;
+  showAnchorMarkers?: boolean;
 }
 
 type DrawableFibLevel = SmartFibLevel & {
@@ -37,6 +39,8 @@ export default function SmartFibOverlay({
   context,
   chartApi,
   candleSeries,
+  showChartDebug = false,
+  showAnchorMarkers = false,
 }: SmartFibOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -53,9 +57,9 @@ export default function SmartFibOverlay({
       context.mapState === "COMPRESSED_LEVELS"
     );
 
-  // Draw candle markers on canvas
+  // Draw anchor markers on canvas (debug/optional)
   useEffect(() => {
-    if (!shouldDraw || !canvasRef.current || !chartApi || !containerRef.current) return;
+    if (!shouldDraw || !showAnchorMarkers || !canvasRef.current || !chartApi || !containerRef.current) return;
 
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -116,40 +120,38 @@ export default function SmartFibOverlay({
       const yPrice = candleSeries.priceToCoordinate(marker.price);
       if (yPrice === null || typeof yPrice !== "number") continue;
 
-      // Vertical line
+      // Optional, subtle vertical line only in debug mode
       const color = marker.type === "HIGH" ? "rgba(239, 68, 68, 0.7)" : "rgba(34, 197, 94, 0.7)";
-      const lineWidth = 3;
+      const lineWidth = showChartDebug ? 2 : 1;
 
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
-      ctx.setLineDash([5, 5]);
+      ctx.setLineDash(showChartDebug ? [5, 5] : [2, 6]);
       ctx.beginPath();
       ctx.moveTo(marker.x, 0);
       ctx.lineTo(marker.x, rect.height);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Top label area
-      const labelText = marker.type === "HIGH" ? "SF High" : "SF Low";
+      // Small price label near anchor
+      const labelText = marker.type === "HIGH" ? "SF HIGH" : "SF LOW";
       const priceText = marker.price.toFixed(2);
-      const indexText = `#${marker.index}`;
+      const indexText = `#${marker.index ?? "-"}`;
 
       ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 0.9)" : "rgba(34, 197, 94, 0.9)";
       ctx.font = "bold 11px monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
 
-      // Draw label box at top
-      const labelBoxPadding = 4;
-      const labelHeight = 22;
-      const labelY = 12;
+      const labelHeight = 18;
+      const labelY = Math.max(14, Math.min(rect.height - 14, yPrice + (marker.type === "HIGH" ? -12 : 12)));
 
       // Background
       ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
       ctx.fillRect(
-        marker.x - 45,
+        marker.x - 48,
         labelY - labelHeight / 2,
-        90,
+        96,
         labelHeight
       );
 
@@ -157,45 +159,22 @@ export default function SmartFibOverlay({
       ctx.strokeStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
       ctx.lineWidth = 1.5;
       ctx.strokeRect(
-        marker.x - 45,
+        marker.x - 48,
         labelY - labelHeight / 2,
-        90,
+        96,
         labelHeight
       );
 
       // Text
       ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
-      ctx.font = "bold 10px monospace";
-      ctx.fillText(labelText, marker.x, labelY - 5);
-      ctx.font = "9px monospace";
-      ctx.fillText(priceText, marker.x, labelY + 5);
-
-      // Bottom label with index
-      const indexBoxHeight = 18;
-      const indexY = rect.height - 10;
-
-      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
-      ctx.fillRect(
-        marker.x - 35,
-        indexY - indexBoxHeight / 2,
-        70,
-        indexBoxHeight
-      );
-
-      ctx.strokeStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(
-        marker.x - 35,
-        indexY - indexBoxHeight / 2,
-        70,
-        indexBoxHeight
-      );
-
-      ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
       ctx.font = "bold 9px monospace";
-      ctx.fillText(indexText, marker.x, indexY);
+      ctx.fillText(`${labelText} ${priceText}`, marker.x, labelY);
+      if (showChartDebug) {
+        ctx.font = "8px monospace";
+        ctx.fillText(indexText, marker.x, labelY + 11);
+      }
     }
-  }, [context, chartApi, candleSeries, shouldDraw]);
+  }, [context, chartApi, candleSeries, shouldDraw, showAnchorMarkers, showChartDebug]);
 
   if (!shouldDraw || !candleSeries) {
     return null;

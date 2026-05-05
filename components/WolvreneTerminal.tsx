@@ -940,9 +940,16 @@ type WolvreneUserPrefs = {
   terminalTab: "dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro";
   hideUI: boolean;
   smartFibEnabled: boolean;
+  showSmartFibChartDebug: boolean;
+  showSmartFibAnchorMarkers: boolean;
+  discordSignalTimeframes: string[];
+  enableCandleBackfill: boolean;
+  preferredCandleHistoryLimit: number;
+  maxBackfillBatches: number;
 };
 
 function userPrefsKey() { return "wolvrene_user_prefs_v37"; }
+function terminalSettingsV2Key() { return "wolvreneTerminalSettingsV2"; }
 
 const defaultUserPrefs: WolvreneUserPrefs = {
   selectedSymbol: TRADE_SYMBOLS[0].symbol,
@@ -956,6 +963,12 @@ const defaultUserPrefs: WolvreneUserPrefs = {
   terminalTab: "dashboard",
   hideUI: false,
   smartFibEnabled: false,
+  showSmartFibChartDebug: false,
+  showSmartFibAnchorMarkers: false,
+  discordSignalTimeframes: ["15m", "1H", "4H"],
+  enableCandleBackfill: true,
+  preferredCandleHistoryLimit: 1000,
+  maxBackfillBatches: 5,
 };
 
 const SCALP_TIMEFRAMES = ["1m", "3m", "5m", "15m"] as const;
@@ -966,6 +979,7 @@ function hasExecutableDecision(plan: DecisionPlan | null | undefined) {
 }
 
 export default function WolvreneTerminal() {
+  const storedPrefs = storageGet<WolvreneUserPrefs>(terminalSettingsV2Key(), storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs));
   const [accessEmail, setAccessEmail] = useState(() => storageGet("wolvrene_access_email", ""));
   const [marketRadarIntelligence, setMarketRadarIntelligence] = useState<MarketIntelligence | null>(null);
   const [marketRadarLoading, setMarketRadarLoading] = useState(false);
@@ -979,11 +993,11 @@ export default function WolvreneTerminal() {
   const [accessError, setAccessError] = useState("");
   const [accessLoading, setAccessLoading] = useState(false);
   const [hydrated] = useState(true);
-  const [timeframe, setTimeframe] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).timeframe || "15m");
+  const [timeframe, setTimeframe] = useState(() => storedPrefs.timeframe || "15m");
   const [tradeModeSelection, setTradeModeSelection] = useState<TradeModeSelection>("AUTO");
-  const [selectedSymbol, setSelectedSymbol] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).selectedSymbol || TRADE_SYMBOLS[0].symbol);
+  const [selectedSymbol, setSelectedSymbol] = useState(() => storedPrefs.selectedSymbol || TRADE_SYMBOLS[0].symbol);
   const [assetMenuOpen, setAssetMenuOpen] = useState(false);
-  const [terminalTab, setTerminalTab] = useState<"dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).terminalTab || "dashboard");
+  const [terminalTab, setTerminalTab] = useState<"dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro">(() => storedPrefs.terminalTab || "dashboard");
   const [backtestRange, setBacktestRange] = useState<100 | 500 | 1000>(500);
   const [eliteJournal, setEliteJournal] = useState<EliteJournalEntry[]>(() =>
     storageGet<EliteJournalEntry[]>(eliteJournalKey(), [])
@@ -995,12 +1009,18 @@ export default function WolvreneTerminal() {
     loadJson("wolvreneChartSettings", defaultSettings)
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [smartFibEnabled, setSmartFibEnabled] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).smartFibEnabled || false);
+  const [smartFibEnabled, setSmartFibEnabled] = useState(() => storedPrefs.smartFibEnabled || false);
+  const [showSmartFibChartDebug, setShowSmartFibChartDebug] = useState(() => Boolean(storedPrefs.showSmartFibChartDebug));
+  const [showSmartFibAnchorMarkers, setShowSmartFibAnchorMarkers] = useState(() => Boolean(storedPrefs.showSmartFibAnchorMarkers));
+  const [discordSignalTimeframes, setDiscordSignalTimeframes] = useState<string[]>(() => storedPrefs.discordSignalTimeframes || ["15m", "1H", "4H"]);
+  const [enableCandleBackfill, setEnableCandleBackfill] = useState(() => storedPrefs.enableCandleBackfill ?? true);
+  const [preferredCandleHistoryLimit, setPreferredCandleHistoryLimit] = useState(() => storedPrefs.preferredCandleHistoryLimit || 1000);
+  const [maxBackfillBatches, setMaxBackfillBatches] = useState(() => storedPrefs.maxBackfillBatches || 5);
   const [smartFibSettingsOpen, setSmartFibSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [hideUI, setHideUI] = useState(() => Boolean(storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).hideUI));
+  const [hideUI, setHideUI] = useState(() => Boolean(storedPrefs.hideUI));
   const [aiOpen, setAiOpen] = useState(false);
   const [aiTab, setAiTab] = useState<AITab>("chat");
   const [aiInput, setAiInput] = useState("");
@@ -1136,13 +1156,13 @@ export default function WolvreneTerminal() {
   );
   const [contextMenu, setContextMenu] = useState({ open: false, x: 0, y: 0, price: 0 });
 
-  const [orderSide, setOrderSide] = useState<Exclude<Direction, null>>(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).orderSide || "LONG");
-  const [marginMode, setMarginMode] = useState<"isolated" | "cross">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).marginMode || "isolated");
-  const [orderType, setOrderType] = useState<"limit" | "market">(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).orderType || "limit");
-  const [draftPrice, setDraftPrice] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).draftPrice || "");
+  const [orderSide, setOrderSide] = useState<Exclude<Direction, null>>(() => storedPrefs.orderSide || "LONG");
+  const [marginMode, setMarginMode] = useState<"isolated" | "cross">(() => storedPrefs.marginMode || "isolated");
+  const [orderType, setOrderType] = useState<"limit" | "market">(() => storedPrefs.orderType || "limit");
+  const [draftPrice, setDraftPrice] = useState(() => storedPrefs.draftPrice || "");
   const [draftSize, setDraftSize] = useState("0.01"); // legacy base-size mirror calculated from USDT
-  const [draftUsd, setDraftUsd] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).draftUsd || "100");
-  const [draftLeverage, setDraftLeverage] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).draftLeverage || "5");
+  const [draftUsd, setDraftUsd] = useState(() => storedPrefs.draftUsd || "100");
+  const [draftLeverage, setDraftLeverage] = useState(() => storedPrefs.draftLeverage || "5");
 
   const [marketStats, setMarketStats] = useState({
     high: "--",
@@ -1882,7 +1902,7 @@ const impulseBoost =
     const smartFibExecutable = smartFibContext.enabled && 
                               (smartFibContext.mapState === "LONG_MAP" || smartFibContext.mapState === "SHORT_MAP") &&
                               smartFibContext.tradeLevels !== undefined &&
-                              smartFibContext.rangeQuality !== "COMPRESSED";
+                              smartFibContext.rangeQuality !== "TOO_SMALL";
 
     // RADAR: provides confirmation/filtering
     const radarState = marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE");
@@ -1914,9 +1934,9 @@ const radarDirection =
       alignmentStatus = "SMART_FIB_WAITING";
       radarGateReason = `Smart Fib invalidated: ${smartFibContext.invalidationReason || "swing broken"}`;
       radarGateResult = "BLOCKED";
-    } else if (smartFibContext.rangeQuality === "COMPRESSED") {
+    } else if (smartFibContext.rangeQuality === "TOO_SMALL") {
       alignmentStatus = "SMART_FIB_WAITING";
-      radarGateReason = "Smart Fib levels too compressed";
+      radarGateReason = "Smart Fib range too small.";
       radarGateResult = "BLOCKED";
     } else if (smartFibDirection && !smartFibExecutable) {
       // Smart Fib has direction but not yet executable (price not in zone)
@@ -2934,8 +2954,16 @@ const displayTP3 = activeTrade
     storageSet<WolvreneUserPrefs>(userPrefsKey(), {
       selectedSymbol, timeframe, marginMode, orderType, orderSide,
       draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled,
+      showSmartFibChartDebug, showSmartFibAnchorMarkers, discordSignalTimeframes,
+      enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches,
     });
-  }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled]);
+    storageSet<WolvreneUserPrefs>(terminalSettingsV2Key(), {
+      selectedSymbol, timeframe, marginMode, orderType, orderSide,
+      draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled,
+      showSmartFibChartDebug, showSmartFibAnchorMarkers, discordSignalTimeframes,
+      enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches,
+    });
+  }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled, showSmartFibChartDebug, showSmartFibAnchorMarkers, discordSignalTimeframes, enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches]);
 
   useEffect(() => {
     if (!executionPrice || !executionUsd) return;
@@ -5349,10 +5377,16 @@ function orderRoi(order: TradeOrder) {
                   </div>
                 </div>
 
-                <div className="hidden">
+                <div className="mb-3 space-y-2">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-sm font-bold text-gray-300">Signal Feed</h3>
                     <span className="text-[10px] text-gray-500">{signalFeedRows.length} rows</span>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-800 bg-black/40 p-2 text-[10px]"><span className="text-zinc-500">Precision State:</span> <span className="text-yellow-300">{brainDecision.phase}</span> · {brainDecision.direction || "WAIT"} · {signalPlan.state}</div>
+                    <div className="rounded-lg border border-zinc-800 bg-black/40 p-2 text-[10px]"><span className="text-zinc-500">Smart Fib Map:</span> {smartFibContext.mapState} · {smartFibContext.setupType} · Lvls {smartFibContext.activeFibLevels.length}</div>
+                    <div className="rounded-lg border border-zinc-800 bg-black/40 p-2 text-[10px]"><span className="text-zinc-500">Smart Fib Debug:</span> ATR {smartFibContext.atr?.toFixed?.(2) || "--"} · Range {smartFibContext.activeRange?.toFixed?.(2) || "--"} · {smartFibContext.rangeQuality || "--"}</div>
+                    <div className="rounded-lg border border-zinc-800 bg-black/40 p-2 text-[10px]"><span className="text-zinc-500">Discord MTF:</span> {externalAlertSettings.enabled ? "ON" : "OFF"} · {discordSignalTimeframes.join(", ")}</div>
                   </div>
                   <div className="space-y-1 max-h-40 overflow-auto">
                     {signalFeedRows.length === 0 && <p className="text-xs text-gray-500">No subscribed signal rows yet.</p>}
@@ -5374,7 +5408,7 @@ function orderRoi(order: TradeOrder) {
             )
             )}
 
-            <div className={`${card} p-3 min-w-0 overflow-hidden`}>
+            <div className={`${card} p-2 xl:p-3 min-w-0 overflow-hidden`}>
               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                   <h2 className="text-lg font-bold">{selectedSymbolLabel} · {timeframe} · WOLVRENE PRECISION</h2>
@@ -5493,11 +5527,11 @@ function orderRoi(order: TradeOrder) {
                 }}
                 className="relative w-full min-w-0 overflow-hidden rounded-xl border border-[rgba(255,139,0,0.25)] bg-black"
               >
-                <div ref={chartRef} className="h-[560px] w-full min-w-0 xl:h-[590px]" />
+                <div ref={chartRef} className="h-[640px] w-full min-w-0 xl:h-[720px]" />
 
-                <SmartFibOverlay context={smartFibContext} chartApi={chartApiRef.current} candleSeries={candleSeriesRef.current} />
+                <SmartFibOverlay context={smartFibContext} chartApi={chartApiRef.current} candleSeries={candleSeriesRef.current} showChartDebug={showSmartFibChartDebug} showAnchorMarkers={showSmartFibAnchorMarkers} />
 
-                <div className="absolute left-4 bottom-4 z-40 w-[280px] rounded-2xl border border-green-500/20 bg-black/70 p-3 text-[11px] text-gray-200 shadow-[0_0_24px_rgba(0,0,0,0.55)]">
+                {showSmartFibChartDebug && <div className="absolute left-4 bottom-4 z-40 w-[280px] rounded-2xl border border-green-500/20 bg-black/70 p-3 text-[11px] text-gray-200 shadow-[0_0_24px_rgba(0,0,0,0.55)]">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-black text-xs text-green-300">Smart Fib Status</span>
                     <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${smartFibContext.enabled ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"}`}>
@@ -5533,9 +5567,9 @@ function orderRoi(order: TradeOrder) {
                       ? smartFibContext.dashboardSummary
                       : "Smart Fib is disabled. Enable the feature to display swing maps, zones, and candidate entries."}
                   </p>
-                </div>
+                </div>}
 
-                <div className="absolute left-3 top-3 z-40 max-w-[300px] rounded-xl border border-yellow-500/20 bg-black/70 px-3 py-2 backdrop-blur-md shadow-[0_0_30px_rgba(0,0,0,0.65)] pointer-events-none">
+                {showSmartFibChartDebug && <div className="absolute left-3 top-3 z-40 max-w-[300px] rounded-xl border border-yellow-500/20 bg-black/70 px-3 py-2 backdrop-blur-md shadow-[0_0_30px_rgba(0,0,0,0.65)] pointer-events-none">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[10px] font-black tracking-[0.18em] text-yellow-400">WOLVRENE PRECISION</p>
                     <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${visualIntelligence.lastDecisionAction === "ENTER NOW" ? "bg-green-500/20 text-green-300" : visualIntelligence.lastDecisionAction === "FILTERED" || visualIntelligence.lastDecisionAction === "EXIT EARLY" ? "bg-red-500/20 text-red-300" : "bg-zinc-800 text-gray-300"}`}>{v25FinalBrain.action}</span>
@@ -5545,6 +5579,9 @@ function orderRoi(order: TradeOrder) {
                   <p className="mt-1 text-[10px] text-gray-400">{v25FinalBrain.reason}</p>
                   <p className="mt-1 text-[10px] text-yellow-300">State: {v25FinalBrain.activeTradeState} · Entry: {v25FinalBrain.entryQuality} · TP hits: {v25FinalBrain.tpHitCount}</p>
                   <p className="mt-1 text-[9px] text-gray-500">Unified brain · closed-candle signals · cooldown protected · stable memory</p>
+                </div>}
+                <div className="absolute right-3 bottom-3 z-40 rounded-md border border-zinc-700 bg-black/70 px-2 py-1 text-[10px] text-zinc-300">
+                  Candles: {recentCandles.length} · Backfill: {enableCandleBackfill ? "ON" : "OFF"} · Provider: Bitget · TF: {timeframe}
                 </div>
                 {activeExecutionTradeView && activeExecutionTradeView.timeframe !== timeframe && (
                   <div className="absolute right-3 top-3 z-40 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-300">
@@ -5933,11 +5970,7 @@ function orderRoi(order: TradeOrder) {
               </div>
             )}
 
-            {smartFibEnabled && (
-              <div className={`${terminalPanel} mt-3 p-4`}>
-                <SmartFibDashboard context={smartFibContext} />
-              </div>
-            )}
+            
 
             {!hideUI && (
               <div className="mt-4 grid gap-3 lg:grid-cols-4">
@@ -6121,14 +6154,14 @@ function orderRoi(order: TradeOrder) {
                   </button>
                   <button
                     onClick={useSignalPlan}
-                    disabled={!brainDecision.direction || brainDecision.phase === "SCANNING" || Boolean(activeExecutionTradeView)}
+                    disabled={!brainDecision.direction || (brainDecision.phase !== "EXECUTE" && brainDecision.phase !== "MANAGE") || Boolean(activeExecutionTradeView)}
                     className="rounded-xl border border-green-700/50 bg-green-500/10 p-3 text-green-400 hover:bg-green-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-black disabled:text-gray-600"
                   >
                     Use Signal
                   </button>
                   <button
                     onClick={sendDiscordSignalNow}
-                    disabled={!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook || !brainDecision.direction || brainDecision.phase === "SCANNING"}
+                    disabled={!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook || !brainDecision.direction || !discordSignalTimeframes.includes(timeframe) || (brainDecision.phase === "SCANNING" && signalPlan.state === "WAITING")}
                     className="rounded-xl border border-indigo-700/50 bg-indigo-500/10 p-3 text-indigo-300 hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-black disabled:text-gray-600"
                     title="Send compact signal format to Discord"
                   >
@@ -6243,7 +6276,8 @@ function orderRoi(order: TradeOrder) {
 
                 <button
                   onClick={() => {
-                    storageSet<WolvreneUserPrefs>(userPrefsKey(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled });
+                    storageSet<WolvreneUserPrefs>(userPrefsKey(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled, showSmartFibChartDebug, showSmartFibAnchorMarkers, discordSignalTimeframes, enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches });
+                    storageSet<WolvreneUserPrefs>(terminalSettingsV2Key(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled, showSmartFibChartDebug, showSmartFibAnchorMarkers, discordSignalTimeframes, enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches });
                     addJournal("User settings saved: symbol, timeframe, order panel, and layout.");
                   }}
                   className="w-full h-9 rounded-xl bg-zinc-900 border border-yellow-700/40 text-yellow-300 text-xs font-black mb-3 hover:bg-zinc-800"
@@ -6655,7 +6689,23 @@ function orderRoi(order: TradeOrder) {
                           <label className="flex items-center justify-between gap-3"><span>External Alerts Enabled</span><input type="checkbox" checked={externalAlertSettings.enabled} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, enabled: e.target.checked }))} /></label>
                           <label className="flex items-center justify-between gap-3"><span>Discord Compact Signal Format</span><input type="checkbox" checked={externalAlertSettings.discordSignalOnly} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, discordSignalOnly: e.target.checked }))} /></label>
                           <label className="flex items-center justify-between gap-3"><span>Auto Send Discord Signals</span><input type="checkbox" checked={externalAlertSettings.autoDiscordSignals} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, autoDiscordSignals: e.target.checked }))} /></label>
+                          <div className="rounded-lg border border-zinc-800 p-2">
+                            <p className="mb-1 text-[11px] text-gray-400">Discord Signal Timeframes</p>
+                            <div className="grid grid-cols-5 gap-1 text-[11px]">
+                              {["1m", "5m", "15m", "1H", "4H"].map((tf) => (
+                                <label key={tf} className="flex items-center gap-1">
+                                  <input type="checkbox" checked={discordSignalTimeframes.includes(tf)} onChange={(e) => setDiscordSignalTimeframes((prev) => e.target.checked ? [...new Set([...prev, tf])] : prev.filter((item) => item !== tf))} />
+                                  <span>{tf}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
                           <input value={externalAlertSettings.discordWebhook} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, discordWebhook: e.target.value }))} placeholder="Discord webhook URL" className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
+                          <div className="rounded-lg border border-zinc-800 p-2 text-[11px] space-y-2">
+                            <label className="flex items-center justify-between"><span>Enable Candle Backfill</span><input type="checkbox" checked={enableCandleBackfill} onChange={(e) => setEnableCandleBackfill(e.target.checked)} /></label>
+                            <label className="flex items-center justify-between gap-2"><span>Preferred Candle History</span><input type="number" min={200} max={2000} value={preferredCandleHistoryLimit} onChange={(e) => setPreferredCandleHistoryLimit(Math.max(200, Number(e.target.value) || 1000))} className="w-24 rounded border border-zinc-700 bg-black px-2 py-1" /></label>
+                            <label className="flex items-center justify-between gap-2"><span>Max Backfill Batches</span><input type="number" min={1} max={12} value={maxBackfillBatches} onChange={(e) => setMaxBackfillBatches(Math.max(1, Number(e.target.value) || 5))} className="w-24 rounded border border-zinc-700 bg-black px-2 py-1" /></label>
+                          </div>
                           <label className="block text-xs text-gray-500">Min Discord signal confidence</label>
                           <input type="number" min={1} max={100} value={externalAlertSettings.minSignalConfidence} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, minSignalConfidence: Math.max(1, Math.min(100, Number(e.target.value) || 62)) }))} className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
                           <input value={externalAlertSettings.telegramWebhook} onChange={(e) => setExternalAlertSettings((p) => ({ ...p, telegramWebhook: e.target.value }))} placeholder="Telegram / bot webhook URL" className="w-full rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs outline-none" />
