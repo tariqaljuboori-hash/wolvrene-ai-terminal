@@ -1026,37 +1026,25 @@ export default function WolvreneTerminal() {
     engine.updateSettings(smartFibSettings);
     return engine;
   }, [smartFibSettings]);
-  const [smartFibContext, setSmartFibContext] = useState<SmartFibContext>(() => ({
-    enabled: false,
-    mapState: "WAITING",
-    setupType: "WAITING",
-    activeFibLevels: [],
-    strongestLevels: [],
-    sniperLevels: [],
-    secondGoldLevels: [],
-    activeBoxes: [],
-    entryCandidates: [],
-    dashboardSummary: "Smart Fib Engine initializing...",
-    lastSignals: [],
-  }));
+  const [smartFibContext, setSmartFibContext] = useState<SmartFibContext>(() => smartFibEngine.getContext(selectedSymbol, timeframe));
   const smartFibProcessedUntilRef = useRef<number | null>(null);
 
   const [smartFibSignals, setSmartFibSignals] = useState<SmartFibSignal[]>([]);
 
   useEffect(() => {
     if (smartFibEnabled) {
-      smartFibEngine.enable();
+      smartFibEngine.enable(selectedSymbol, timeframe);
     } else {
-      smartFibEngine.disable();
+      smartFibEngine.disable(selectedSymbol, timeframe);
     }
     smartFibProcessedUntilRef.current = null;
     setSmartFibSignals([]);
-    setSmartFibContext(smartFibEngine.getContext());
-  }, [smartFibEnabled, smartFibEngine]);
+    setSmartFibContext(smartFibEngine.getContext(selectedSymbol, timeframe));
+  }, [smartFibEnabled, smartFibEngine, selectedSymbol, timeframe]);
 
   useEffect(() => {
     if (!smartFibEnabled || recentCandles.length === 0) {
-      setSmartFibContext(smartFibEngine.getContext());
+      setSmartFibContext(smartFibEngine.getContext(selectedSymbol, timeframe));
       return;
     }
 
@@ -1066,19 +1054,19 @@ export default function WolvreneTerminal() {
       : recentCandles.filter((c) => c.time > lastProcessedTime);
 
     if (pendingCandles.length === 0) {
-      setSmartFibContext(smartFibEngine.getContext());
+      setSmartFibContext(smartFibEngine.getContext(selectedSymbol, timeframe));
       return;
     }
 
-    const signals = smartFibEngine.processCandles(pendingCandles);
+    const signals = smartFibEngine.processCandles(selectedSymbol, timeframe, pendingCandles);
     smartFibProcessedUntilRef.current = recentCandles[recentCandles.length - 1]?.time ?? lastProcessedTime;
-    setSmartFibContext(smartFibEngine.getContext());
+    setSmartFibContext(smartFibEngine.getContext(selectedSymbol, timeframe));
     setSmartFibSignals((prev) => {
       const combined = [...prev, ...signals];
       const deduped = combined.filter((sig, idx, arr) => arr.findIndex((s) => s.id === sig.id) === idx);
       return deduped.slice(-50);
     });
-  }, [recentCandles, smartFibEnabled, smartFibEngine]);
+  }, [recentCandles, smartFibEnabled, smartFibEngine, selectedSymbol, timeframe]);
 
   const [orders, setOrders] = useState<TradeOrder[]>(() =>
     loadJson("wolvreneOrdersV15", [] as TradeOrder[]).map((order) =>
@@ -1844,32 +1832,107 @@ const impulseBoost =
     };
   }, [normalizedRadarSymbol, timeframe]);
   const radarGate = useMemo(() => {
+    // SMART FIB FIRST: Smart Fib is the primary signal source
+    const smartFibDirection = smartFibContext.setupType === "LONG_MAP" ? "LONG" :
+                             smartFibContext.setupType === "SHORT_MAP" ? "SHORT" : 
+                             null;
+    const smartFibExecutable = smartFibContext.enabled && 
+                              (smartFibContext.mapState === "LONG_MAP" || smartFibContext.mapState === "SHORT_MAP") &&
+                              smartFibContext.tradeLevels !== undefined &&
+                              smartFibContext.rangeQuality !== "COMPRESSED";
+
+    // RADAR: provides confirmation/filtering
     const radarState = marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE");
     const radarBias = marketRadarIntelligence?.bias ?? "UNKNOWN";
-    const legacySignal = decisionPlan.direction || signalPlan.direction || null;
-    const directionAligned =
-      !legacySignal
-        ? false
-        : radarBias === "BULLISH_REACTION"
-        ? legacySignal === "LONG"
-        : radarBias === "BEARISH_REACTION"
-        ? legacySignal === "SHORT"
-        : radarBias === "NEUTRAL" || radarBias === "CONFLICTED"
-        ? false
-        : true;
-    let finalSignalMode: RadarFinalSignalMode = "LEGACY_MODE";
-    let radarGateResult: "PASSED" | "BLOCKED" | "WAITING" | "LEGACY_ONLY" = "LEGACY_ONLY";
-    let radarGateReason = "Radar unavailable — legacy signal only";
-    let finalSignalSource: "LEGACY" | "MARKET_RADAR" | "COMBINED" = "LEGACY";
-    if (radarState === "RADAR_LOADING") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Loading radar..."; }
-    else if (radarState === "HUNT_BUILDING") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Blocked: Radar has not confirmed reaction"; }
-    else if (radarState === "LIQUIDITY_SWEPT") { finalSignalMode = "RADAR_WAIT"; radarGateResult = "WAITING"; radarGateReason = "Waiting: liquidity swept but no reclaim yet"; }
-    else if (radarState === "TRAP_POSSIBLE") { finalSignalMode = "RADAR_CONFIRMATION_REQUIRED"; radarGateResult = "WAITING"; radarGateReason = "Trap possible — confirmation required"; }
-    else if (radarState === "REACTION_CONFIRMED") { finalSignalMode = "RADAR_VALIDATED"; radarGateResult = directionAligned ? "PASSED" : "BLOCKED"; radarGateReason = directionAligned ? "Passed: reaction confirmed by radar" : "Blocked: Radar bias conflicts with legacy direction"; finalSignalSource = directionAligned ? "COMBINED" : "MARKET_RADAR"; }
-    else if (radarState === "TRADE_ALLOWED") { finalSignalMode = "RADAR_APPROVED"; radarGateResult = directionAligned ? "PASSED" : "BLOCKED"; radarGateReason = directionAligned ? "Passed: Radar approved with aligned direction" : "Blocked: direction/risk alignment failed"; finalSignalSource = directionAligned ? "COMBINED" : "MARKET_RADAR"; }
-    else if (radarState === "NO_TRADE") { finalSignalMode = "RADAR_BLOCKED"; radarGateResult = "BLOCKED"; radarGateReason = "Blocked: Radar no-trade state"; finalSignalSource = "MARKET_RADAR"; }
-    return { legacySignal, radarState, radarBias, directionAligned, finalSignalMode, radarGateResult, radarGateReason, finalSignalSource };
-  }, [marketRadarIntelligence, marketRadarLoading, decisionPlan.direction, signalPlan.direction]);
+    const radarDirection = radarBias === "BULLISH_REACTION" || radarBias === "BULLISH" ? "LONG" :
+                          radarBias === "BEARISH_REACTION" || radarBias === "BEARISH" ? "SHORT" : 
+                          null;
+
+    // ALIGNMENT: Smart Fib primary + Radar confirmation
+    let alignmentStatus: "SMART_FIB_WAITING" | "RADAR_WAITING" | "EXECUTABLE_ALIGNMENT" | "REACTION_ONLY" | "CONFLICT" = "SMART_FIB_WAITING";
+    let radarGateResult: "PASSED" | "BLOCKED" | "WAITING" | "LEGACY_ONLY" = "WAITING";
+    let radarGateReason = "Waiting for Smart Fib setup...";
+    let finalSignalSource: "LEGACY" | "MARKET_RADAR" | "COMBINED" | "SMART_FIB" = "SMART_FIB";
+
+    if (!smartFibContext.enabled) {
+      alignmentStatus = "SMART_FIB_WAITING";
+      radarGateReason = "Smart Fib disabled";
+      radarGateResult = "BLOCKED";
+    } else if (smartFibContext.mapState === "DISABLED" || smartFibContext.mapState === "WAITING_FOR_CANDLES" || smartFibContext.mapState === "WAITING_FOR_SWING_PAIR") {
+      alignmentStatus = "SMART_FIB_WAITING";
+      radarGateReason = `Smart Fib ${smartFibContext.mapState}`;
+      radarGateResult = "WAITING";
+    } else if (smartFibContext.mapState === "INVALIDATED") {
+      alignmentStatus = "SMART_FIB_WAITING";
+      radarGateReason = `Smart Fib invalidated: ${smartFibContext.invalidationReason || "swing broken"}`;
+      radarGateResult = "BLOCKED";
+    } else if (smartFibContext.rangeQuality === "COMPRESSED") {
+      alignmentStatus = "SMART_FIB_WAITING";
+      radarGateReason = "Smart Fib levels too compressed";
+      radarGateResult = "BLOCKED";
+    } else if (smartFibDirection && !smartFibExecutable) {
+      // Smart Fib has direction but not yet executable (price not in zone)
+      if (radarState === "RADAR_LOADING" || radarState === "DATA_UNAVAILABLE") {
+        alignmentStatus = "RADAR_WAITING";
+        radarGateReason = `Smart Fib ${smartFibContext.setupType} - Radar loading`;
+        radarGateResult = "WAITING";
+      } else if (radarDirection === smartFibDirection) {
+        alignmentStatus = "REACTION_ONLY";
+        radarGateReason = `Smart Fib ${smartFibContext.setupType} - Radar confirms (waiting for entry zone)`;
+        radarGateResult = "WAITING";
+        finalSignalSource = "COMBINED";
+      } else if (radarDirection && radarDirection !== smartFibDirection) {
+        alignmentStatus = "CONFLICT";
+        radarGateReason = `Conflict: Smart Fib ${smartFibContext.setupType} vs Radar ${radarDirection}`;
+        radarGateResult = "BLOCKED";
+      } else {
+        alignmentStatus = "RADAR_WAITING";
+        radarGateReason = `Smart Fib ${smartFibContext.setupType} - Radar unclear`;
+        radarGateResult = "WAITING";
+      }
+    } else if (smartFibDirection && smartFibExecutable) {
+      // Smart Fib IS EXECUTABLE: Check radar for final confirmation
+      if (radarState === "RADAR_LOADING" || radarState === "DATA_UNAVAILABLE") {
+        alignmentStatus = "EXECUTABLE_ALIGNMENT";
+        radarGateReason = `Smart Fib ${smartFibContext.setupType} executable (radar pending)`;
+        radarGateResult = "PASSED";
+        finalSignalSource = "SMART_FIB";
+      } else if (radarDirection === smartFibDirection) {
+        alignmentStatus = "EXECUTABLE_ALIGNMENT";
+        radarGateReason = `Smart Fib + Radar aligned: ${smartFibContext.setupType}`;
+        radarGateResult = "PASSED";
+        finalSignalSource = "COMBINED";
+      } else if (radarDirection && radarDirection !== smartFibDirection) {
+        alignmentStatus = "CONFLICT";
+        radarGateReason = `CONFLICT: Smart Fib ${smartFibContext.setupType} vs Radar ${radarDirection}`;
+        radarGateResult = "BLOCKED";
+      } else {
+        alignmentStatus = "EXECUTABLE_ALIGNMENT";
+        radarGateReason = `Smart Fib ${smartFibContext.setupType} executable`;
+        radarGateResult = "PASSED";
+        finalSignalSource = "SMART_FIB";
+      }
+    } else {
+      alignmentStatus = "SMART_FIB_WAITING";
+      radarGateReason = "No valid Smart Fib setup";
+      radarGateResult = "BLOCKED";
+    }
+
+    return { 
+      smartFibDirection, 
+      smartFibExecutable,
+      radarDirection,
+      alignmentStatus,
+      radarState, 
+      radarBias, 
+      directionAligned: alignmentStatus === "EXECUTABLE_ALIGNMENT" || alignmentStatus === "REACTION_ONLY",
+      finalSignalMode: alignmentStatus as any,
+      radarGateResult, 
+      radarGateReason, 
+      finalSignalSource,
+      legacySignal: decisionPlan.direction || signalPlan.direction || null,
+    };
+  }, [smartFibContext, marketRadarIntelligence, marketRadarLoading, decisionPlan.direction, signalPlan.direction]);
 
   const sessionSniper = useMemo(() => getSessionSniperState(session), [session]);
 
@@ -2643,11 +2706,28 @@ const impulseBoost =
     const selectedActiveOrder = orders.find((order) => order.status !== "CLOSED") || null;
 
     // v37: never show fake Entry/SL/TP unless there is a true EXECUTE signal or open trade.
-    const displayEntry = activeTrade ? selectedActiveOrder?.entry ?? null : hasRealSignal ? (decisionPlan.entry || signalPlan.entry) : null;
-    const displaySL = activeTrade ? selectedActiveOrder?.sl ?? null : hasRealSignal ? (decisionPlan.sl || signalPlan.sl) : null;
-    const displayTP1 = activeTrade ? selectedActiveOrder?.tps?.[0]?.price ?? null : hasRealSignal ? (decisionPlan.tp1 || signalPlan.tp1) : null;
-    const displayTP2 = activeTrade ? selectedActiveOrder?.tps?.[1]?.price ?? null : hasRealSignal ? (decisionPlan.tp2 || signalPlan.tp2) : null;
-    const displayTP3 = activeTrade ? selectedActiveOrder?.tps?.[2]?.price ?? null : hasRealSignal ? (decisionPlan.tp3 || signalPlan.tp3) : null;
+    // SMART FIB PRIMARY: Use Smart Fib levels if they're executable and properly aligned
+    const smartFibIsExecutableAndGood = 
+      smartFibContext.enabled && 
+      smartFibContext.tradeLevels && 
+      (radarGate.alignmentStatus === "EXECUTABLE_ALIGNMENT" || radarGate.alignmentStatus === "REACTION_ONLY") &&
+      radarGate.smartFibExecutable;
+
+    const displayEntry = activeTrade ? selectedActiveOrder?.entry ?? null : 
+                        smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.entry :
+                        hasRealSignal ? (decisionPlan.entry || signalPlan.entry) : null;
+    const displaySL = activeTrade ? selectedActiveOrder?.sl ?? null : 
+                     smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.sl :
+                     hasRealSignal ? (decisionPlan.sl || signalPlan.sl) : null;
+    const displayTP1 = activeTrade ? selectedActiveOrder?.tps?.[0]?.price ?? null : 
+                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.tp1 :
+                      hasRealSignal ? (decisionPlan.tp1 || signalPlan.tp1) : null;
+    const displayTP2 = activeTrade ? selectedActiveOrder?.tps?.[1]?.price ?? null : 
+                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.tp2 :
+                      hasRealSignal ? (decisionPlan.tp2 || signalPlan.tp2) : null;
+    const displayTP3 = activeTrade ? selectedActiveOrder?.tps?.[2]?.price ?? null : 
+                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels.tp3 :
+                      hasRealSignal ? (decisionPlan.tp3 || signalPlan.tp3) : null;
 
     const tpHitCount = orders.reduce((sum, order) => sum + order.tps.filter((tp) => tp.hit).length, 0);
     const activeTradeState =
@@ -2808,15 +2888,52 @@ const impulseBoost =
   }, [selectedSymbol]);
 
   useEffect(() => {
-  ordersRef.current = orders;
-  if (!hydrated) return;
-  saveJson("wolvreneOrdersV15", orders);
+    ordersRef.current = orders;
+    if (!hydrated) return;
+    saveJson("wolvreneOrdersV15", orders);
   }, [orders, hydrated]);
+  
   useEffect(() => {
-  alertsRef.current = alerts;
-  if (!hydrated) return;
-  saveJson("wolvreneAlertsV15", alerts);
+    alertsRef.current = alerts;
+    if (!hydrated) return;
+    saveJson("wolvreneAlertsV15", alerts);
   }, [alerts, hydrated]);
+
+  // Auto-send Discord signals when Smart Fib becomes executable and aligned
+  useEffect(() => {
+    if (!smartFibContext.enabled || !smartFibContext.tradeLevels) return;
+    if (radarGate.alignmentStatus !== "EXECUTABLE_ALIGNMENT" && radarGate.alignmentStatus !== "REACTION_ONLY") return;
+    if (!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook) return;
+    if (externalAlertSettings.autoDiscordSignals === false) return;
+
+    const key = `smart-fib-discord-${selectedSymbol}-${timeframe}-${smartFibContext.mapState}-${smartFibContext.tradeLevels.entry}`;
+    if (lastDiscordSignalKeyRef.current === key) return; // Already sent
+    
+    lastDiscordSignalKeyRef.current = key;
+    
+    const { buildSmartFibDiscordPayload, sendSmartFibDiscordSignal } = require("@/core/discordEngine");
+    const payload = buildSmartFibDiscordPayload({
+      symbol: selectedSymbol,
+      smartFibContext,
+      alignmentStatus: radarGate.alignmentStatus,
+      currentPrice: livePrice || lastCandleRef.current?.close || 0,
+    });
+    
+    if (payload && externalAlertSettings.discordWebhook) {
+      sendSmartFibDiscordSignal({
+        webhook: externalAlertSettings.discordWebhook,
+        payload,
+        cooldownMs: 120000,
+      }).then(result => {
+        if (result.sent) {
+          console.log("[Wolvrene] Smart Fib Discord signal sent:", key);
+        }
+      }).catch(err => {
+        console.error("[Wolvrene] Discord send error:", err);
+      });
+    }
+  }, [smartFibContext.mapState, smartFibContext.tradeLevels?.entry, radarGate.alignmentStatus, selectedSymbol, timeframe, livePrice, externalAlertSettings.enabled, externalAlertSettings.discordWebhook, externalAlertSettings.autoDiscordSignals]);
+
 
   useEffect(() => {
   if (!hydrated) return;
@@ -3171,8 +3288,40 @@ useEffect(() => {
       (radarGate.finalSignalMode === "RADAR_VALIDATED" && radarGate.directionAligned)
     );
 
-  const canExecuteLong = canExecuteSignal && v25FinalBrain.finalDirection === "LONG";
-  const canExecuteShort = canExecuteSignal && v25FinalBrain.finalDirection === "SHORT";
+  // Compute Radar + Smart Fib alignment status
+  const radarDirection = v25FinalBrain.finalDirection || "WAIT";
+  const smartFibDirection = smartFibContext.setupType === "LONG_MAP" ? "LONG" :
+                           smartFibContext.setupType === "SHORT_MAP" ? "SHORT" : "WAIT";
+
+  const alignmentStatus = useMemo(() => {
+    if (smartFibContext.mapState === "DISABLED" || smartFibContext.mapState === "WAITING_FOR_CANDLES" || smartFibContext.mapState === "WAITING_FOR_SWING_PAIR") return "SMART_FIB_WAITING";
+    if (radarDirection === "WAIT") return "RADAR_WAITING";
+    if (radarDirection === smartFibDirection) {
+      if (smartFibContext.currentSignal?.executable) return "EXECUTABLE_ALIGNMENT";
+      return "REACTION_ONLY";
+    }
+    return "CONFLICT";
+  }, [radarDirection, smartFibDirection, smartFibContext.mapState, smartFibContext.currentSignal?.executable]);
+
+  const canExecuteLong = canExecuteSignal && v25FinalBrain.finalDirection === "LONG" && alignmentStatus !== "CONFLICT";
+  const canExecuteShort = canExecuteSignal && v25FinalBrain.finalDirection === "SHORT" && alignmentStatus !== "CONFLICT";
+
+  const alignmentText = useMemo(() => {
+    switch (alignmentStatus) {
+      case "EXECUTABLE_ALIGNMENT":
+        return `Radar / Smart Fib aligned: ${radarDirection}`;
+      case "REACTION_ONLY":
+        return `Radar / Smart Fib aligned: ${radarDirection} (reaction only)`;
+      case "CONFLICT":
+        return `Radar / Smart Fib conflict: Radar ${radarDirection} vs Smart Fib ${smartFibDirection}_MAP`;
+      case "SMART_FIB_WAITING":
+        return "Smart Fib waiting for confirmed swing map";
+      case "RADAR_WAITING":
+        return "Radar waiting for confirmation";
+      default:
+        return "Alignment unknown";
+    }
+  }, [alignmentStatus, radarDirection, smartFibDirection]);
 
   function useSignalPlan() {
     if (!v25FinalBrain.finalDirection || !v25FinalBrain.entry || v25FinalBrain.action !== "ENTER NOW") {
@@ -3794,6 +3943,7 @@ function orderRoi(order: TradeOrder) {
     selectedSignal: (aiLiveContext.signalFeed as { selected?: unknown } | undefined)?.selected ?? null,
     signalFeed: (aiLiveContext.signalFeed as { latestRows?: unknown[] } | undefined)?.latestRows ?? [],
     smartFibContext: aiLiveContext.smartFibContext,
+    alignment: { status: alignmentStatus, text: alignmentText, radarDirection, smartFibDirection },
     chartSnapshot: aiLiveContext.chartSnapshot,
     availableDataFlags: aiLiveContext.aiPayloadDebug ?? {},
   }), [aiInput, aiExplanationMode, selectedSymbol, normalizedRadarSymbol, timeframe, livePrice, session, marketStats.high, marketStats.low, marketStats.volume, marketStats.change, marketStats.funding, sessionCountdown, radarGate, marketRadarIntelligence?.confidence, marketRadarSource, aiLiveContext, sanitizedBrainPayload, activeTradeContext, selectedTradeContext]);
@@ -5294,6 +5444,12 @@ function orderRoi(order: TradeOrder) {
                     <div>
                       <div className="text-gray-500">Signals</div>
                       <div className="font-bold text-white">{smartFibContext.lastSignals.length}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[10px]">
+                    <div className="text-gray-500">Alignment</div>
+                    <div className={`font-bold ${alignmentStatus === "EXECUTABLE_ALIGNMENT" ? "text-green-400" : alignmentStatus === "CONFLICT" ? "text-red-400" : "text-yellow-400"}`}>
+                      {alignmentText}
                     </div>
                   </div>
                   <p className="mt-2 text-[10px] text-gray-400">

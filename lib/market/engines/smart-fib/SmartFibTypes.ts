@@ -1,3 +1,33 @@
+import type { SMART_FIB_DEFAULTS } from "./SmartFibDefaults";
+
+export interface SmartFibPivot {
+  type: "HIGH" | "LOW";
+  index: number;
+  time: number;
+  price: number;
+  confirmedAtIndex: number;
+  strength?: number;
+}
+
+export interface SmartFibMapCandidate {
+  swingHigh: SmartFibPivot;
+  swingLow: SmartFibPivot;
+  range: number;
+  setupType: "LONG_MAP" | "SHORT_MAP";
+  quality: number;
+  age: number;
+  invalidated: boolean;
+}
+
+export interface SmartFibLevel {
+  level: number;
+  price: number;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  quality?: string;
+}
+
 export interface SmartFibSignal {
   id: string;
   timestamp: number;
@@ -39,30 +69,30 @@ export interface SmartFibSignal {
 
 export interface SmartFibContext {
   enabled: boolean;
-  mapState: "WAITING" | "LONG_MAP" | "SHORT_MAP";
+  settings?: typeof SMART_FIB_DEFAULTS;
+  symbol: string;
+  timeframe: string;
+  mapState: "DISABLED" | "WAITING_FOR_CANDLES" | "WAITING_FOR_SWING_PAIR" | "RANGE_TOO_SMALL" | "COMPRESSED_LEVELS" | "LONG_MAP" | "SHORT_MAP" | "INVALIDATED" | "REANCHORED" | "FALLBACK_ACTIVE";
   setupType: "LONG_MAP" | "SHORT_MAP" | "WAITING";
   swingHigh?: number;
   swingLow?: number;
   swingHighIndex?: number;
   swingLowIndex?: number;
+  swingHighPivot?: SmartFibPivot;
+  swingLowPivot?: SmartFibPivot;
   activeRange?: number;
-  activeFibLevels: number[];
-  strongestLevels: number[];
-  sniperLevels: number[];
-  secondGoldLevels: number[];
+  activeFibLevels: SmartFibLevel[];
+  confirmedPivots: SmartFibPivot[];
+  activeMap?: SmartFibMapCandidate;
+  mapCandidates: SmartFibMapCandidate[];
+  invalidationReason?: string;
+  reanchorReason?: string;
+  fallbackReason?: string;
+  atr?: number;
+  rangeQuality?: "TOO_SMALL" | "COMPRESSED" | "GOOD";
   activeBoxes: SmartFibBox[];
-  bestDemandBox?: SmartFibBox;
-  bestSupplyBox?: SmartFibBox;
-  lastTouchedLevel?: number;
-  lastReactionQuality?: string;
-  bestLevelQuality?: string;
-  entryCandidates: SmartFibEntryCandidate[];
   currentSignal?: SmartFibSignal;
-  activeTrade?: SmartFibTrade;
   tradeLevels?: SmartFibTradeLevels;
-  invalidation?: string;
-  htfAlignment?: "BULLISH" | "BEARISH" | "NEUTRAL" | "CONFLICT";
-  emaConfluence?: number;
   dashboardSummary: string;
   lastSignals: SmartFibSignal[];
 }

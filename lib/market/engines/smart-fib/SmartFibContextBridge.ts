@@ -1,54 +1,48 @@
 import type { SmartFibContext } from "./SmartFibTypes";
 
-export function buildSmartFibContextBridge(context: SmartFibContext): any {
+export function buildSmartFibContextBridge(context: SmartFibContext, currentPrice?: number): any {
   return {
     enabled: context.enabled,
+    symbol: context.symbol,
+    timeframe: context.timeframe,
     mapState: context.mapState,
     setupType: context.setupType,
     swingHigh: context.swingHigh,
     swingLow: context.swingLow,
     swingHighIndex: context.swingHighIndex,
     swingLowIndex: context.swingLowIndex,
+    swingHighPivot: context.swingHighPivot,
+    swingLowPivot: context.swingLowPivot,
     activeRange: context.activeRange,
     activeFibLevels: context.activeFibLevels,
-    strongestLevels: context.strongestLevels,
-    sniperLevels: context.sniperLevels,
-    secondGoldLevels: context.secondGoldLevels,
+    confirmedPivots: context.confirmedPivots,
+    activeMap: context.activeMap,
+    mapCandidates: context.mapCandidates,
+    invalidationReason: context.invalidationReason,
+    reanchorReason: context.reanchorReason,
+    fallbackReason: context.fallbackReason,
+    atr: context.atr,
+    rangeQuality: context.rangeQuality,
     activeBoxes: context.activeBoxes.map(box => ({
       type: box.type,
       high: box.high,
       low: box.low,
       strength: box.strength,
       touches: box.touches,
+      retests: box.retests,
       quality: box.quality,
     })),
-    bestDemandBox: context.bestDemandBox ? {
-      type: context.bestDemandBox.type,
-      high: context.bestDemandBox.high,
-      low: context.bestDemandBox.low,
-      strength: context.bestDemandBox.strength,
-      touches: context.bestDemandBox.touches,
-      quality: context.bestDemandBox.quality,
-    } : undefined,
-    bestSupplyBox: context.bestSupplyBox ? {
-      type: context.bestSupplyBox.type,
-      high: context.bestSupplyBox.high,
-      low: context.bestSupplyBox.low,
-      strength: context.bestSupplyBox.strength,
-      touches: context.bestSupplyBox.touches,
-      quality: context.bestSupplyBox.quality,
-    } : undefined,
-    lastTouchedLevel: context.lastTouchedLevel,
-    lastReactionQuality: context.lastReactionQuality,
-    bestLevelQuality: context.bestLevelQuality,
-    entryCandidates: context.entryCandidates,
     currentSignal: context.currentSignal,
-    activeTrade: context.activeTrade,
     tradeLevels: context.tradeLevels,
-    invalidation: context.invalidation,
-    htfAlignment: context.htfAlignment,
-    emaConfluence: context.emaConfluence,
     dashboardSummary: context.dashboardSummary,
     lastSignals: context.lastSignals.slice(-5), // Last 5 signals
+    settings: context.settings,
+    // New: execution readiness
+    isExecutable: context.enabled && 
+      (context.mapState === "LONG_MAP" || context.mapState === "SHORT_MAP") &&
+      context.tradeLevels !== undefined,
+    mapDirection: context.setupType === "LONG_MAP" ? "LONG" : 
+                 context.setupType === "SHORT_MAP" ? "SHORT" : 
+                 null,
   };
 }
