@@ -28,6 +28,16 @@ export interface SmartFibLevel {
   quality?: string;
 }
 
+export interface SmartFibTradeLevels {
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  zone: string;
+  invalidation?: number;
+}
+
 export interface SmartFibSignal {
   id: string;
   timestamp: number;
@@ -67,36 +77,6 @@ export interface SmartFibSignal {
   reason: string;
 }
 
-export interface SmartFibContext {
-  enabled: boolean;
-  settings?: typeof SMART_FIB_DEFAULTS;
-  symbol: string;
-  timeframe: string;
-  mapState: "DISABLED" | "WAITING_FOR_CANDLES" | "WAITING_FOR_SWING_PAIR" | "RANGE_TOO_SMALL" | "COMPRESSED_LEVELS" | "LONG_MAP" | "SHORT_MAP" | "INVALIDATED" | "REANCHORED" | "FALLBACK_ACTIVE";
-  setupType: "LONG_MAP" | "SHORT_MAP" | "WAITING";
-  swingHigh?: number;
-  swingLow?: number;
-  swingHighIndex?: number;
-  swingLowIndex?: number;
-  swingHighPivot?: SmartFibPivot;
-  swingLowPivot?: SmartFibPivot;
-  activeRange?: number;
-  activeFibLevels: SmartFibLevel[];
-  confirmedPivots: SmartFibPivot[];
-  activeMap?: SmartFibMapCandidate;
-  mapCandidates: SmartFibMapCandidate[];
-  invalidationReason?: string;
-  reanchorReason?: string;
-  fallbackReason?: string;
-  atr?: number;
-  rangeQuality?: "TOO_SMALL" | "COMPRESSED" | "GOOD";
-  activeBoxes: SmartFibBox[];
-  currentSignal?: SmartFibSignal;
-  tradeLevels?: SmartFibTradeLevels;
-  dashboardSummary: string;
-  lastSignals: SmartFibSignal[];
-}
-
 export interface SmartFibBox {
   type: "DEMAND" | "SUPPLY";
   high: number;
@@ -105,6 +85,57 @@ export interface SmartFibBox {
   touches: number;
   retests: number;
   quality: string;
+}
+
+export interface SmartFibContext {
+  enabled: boolean;
+  settings?: typeof SMART_FIB_DEFAULTS;
+
+  symbol: string;
+  timeframe: string;
+
+  mapState:
+    | "DISABLED"
+    | "WAITING_FOR_CANDLES"
+    | "WAITING_FOR_SWING_PAIR"
+    | "RANGE_TOO_SMALL"
+    | "COMPRESSED_LEVELS"
+    | "LONG_MAP"
+    | "SHORT_MAP"
+    | "INVALIDATED"
+    | "REANCHORED"
+    | "FALLBACK_ACTIVE";
+
+  setupType: "LONG_MAP" | "SHORT_MAP" | "WAITING";
+
+  swingHigh?: number;
+  swingLow?: number;
+  swingHighIndex?: number;
+  swingLowIndex?: number;
+  swingHighPivot?: SmartFibPivot;
+  swingLowPivot?: SmartFibPivot;
+
+  activeRange?: number;
+  activeFibLevels: SmartFibLevel[];
+  confirmedPivots: SmartFibPivot[];
+
+  activeMap?: SmartFibMapCandidate;
+  mapCandidates: SmartFibMapCandidate[];
+
+  invalidationReason?: string;
+  reanchorReason?: string;
+  fallbackReason?: string;
+
+  atr?: number;
+  rangeQuality?: "TOO_SMALL" | "COMPRESSED" | "GOOD";
+
+  activeBoxes: SmartFibBox[];
+
+  currentSignal?: SmartFibSignal;
+  tradeLevels?: SmartFibTradeLevels;
+
+  dashboardSummary: string;
+  lastSignals: SmartFibSignal[];
 }
 
 export interface SmartFibEntryCandidate {
@@ -129,13 +160,3 @@ export interface SmartFibTrade {
   roe: number;
   status: "ACTIVE" | "CLOSED_TP" | "CLOSED_SL";
 }
-
-export type SmartFibTradeLevels = {
-  entry: number;
-  sl: number;
-  tp1: number;
-  tp2: number;
-  tp3: number;
-  zone: string;
-  invalidation?: number;
-};

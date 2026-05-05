@@ -1843,11 +1843,13 @@ const impulseBoost =
 
     // RADAR: provides confirmation/filtering
     const radarState = marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE");
-    const radarBias = String(marketRadarIntelligence?.bias ?? "UNKNOWN").toUpperCase();
+    const radarBias = marketRadarIntelligence?.bias ?? "UNKNOWN";
+    const radarBiasText = String(radarBias ?? "UNKNOWN");
+
 const radarDirection =
-  radarBias.includes("BULLISH") || radarBias.includes("LONG")
+  radarBiasText === "BULLISH_REACTION" || radarBiasText === "BULLISH"
     ? "LONG"
-    : radarBias.includes("BEARISH") || radarBias.includes("SHORT")
+    : radarBiasText === "BEARISH_REACTION" || radarBiasText === "BEARISH"
       ? "SHORT"
       : null;
 
@@ -2710,28 +2712,54 @@ const radarDirection =
 
     // v37: never show fake Entry/SL/TP unless there is a true EXECUTE signal or open trade.
     // SMART FIB PRIMARY: Use Smart Fib levels if they're executable and properly aligned
-    const smartFibIsExecutableAndGood = 
-      smartFibContext.enabled && 
-      smartFibContext.tradeLevels && 
-      (radarGate.alignmentStatus === "EXECUTABLE_ALIGNMENT" || radarGate.alignmentStatus === "REACTION_ONLY") &&
-      radarGate.smartFibExecutable;
+    const smartFibTradeLevels = smartFibContext.tradeLevels;
 
-    const displayEntry = activeTrade ? selectedActiveOrder?.entry ?? null : 
-                        smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.entry :
-                        hasRealSignal ? (decisionPlan.entry || signalPlan.entry) : null;
-    const displaySL = activeTrade ? selectedActiveOrder?.sl ?? null : 
-                     smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.sl :
-                     hasRealSignal ? (decisionPlan.sl || signalPlan.sl) : null;
-    const displayTP1 = activeTrade ? selectedActiveOrder?.tps?.[0]?.price ?? null : 
-                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.tp1 :
-                      hasRealSignal ? (decisionPlan.tp1 || signalPlan.tp1) : null;
-    const displayTP2 = activeTrade ? selectedActiveOrder?.tps?.[1]?.price ?? null : 
-                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.tp2 :
-                      hasRealSignal ? (decisionPlan.tp2 || signalPlan.tp2) : null;
-    const displayTP3 = activeTrade ? selectedActiveOrder?.tps?.[2]?.price ?? null : 
-                      smartFibIsExecutableAndGood && hasRealSignal ? smartFibContext.tradeLevels?.tp3 :
-                      hasRealSignal ? (decisionPlan.tp3 || signalPlan.tp3) : null;
+const smartFibIsExecutableAndGood =
+  smartFibContext.enabled &&
+  Boolean(smartFibTradeLevels) &&
+  (radarGate.alignmentStatus === "EXECUTABLE_ALIGNMENT" ||
+    radarGate.alignmentStatus === "REACTION_ONLY") &&
+  radarGate.smartFibExecutable;
 
+const displayEntry = activeTrade
+  ? selectedActiveOrder?.entry ?? null
+  : smartFibIsExecutableAndGood && hasRealSignal && smartFibTradeLevels
+    ? smartFibTradeLevels.entry
+    : hasRealSignal
+      ? decisionPlan.entry || signalPlan.entry
+      : null;
+
+const displaySL = activeTrade
+  ? selectedActiveOrder?.sl ?? null
+  : smartFibIsExecutableAndGood && hasRealSignal && smartFibTradeLevels
+    ? smartFibTradeLevels.sl
+    : hasRealSignal
+      ? decisionPlan.sl || signalPlan.sl
+      : null;
+
+const displayTP1 = activeTrade
+  ? selectedActiveOrder?.tps?.[0]?.price ?? null
+  : smartFibIsExecutableAndGood && hasRealSignal && smartFibTradeLevels
+    ? smartFibTradeLevels.tp1
+    : hasRealSignal
+      ? decisionPlan.tp1 || signalPlan.tp1
+      : null;
+
+const displayTP2 = activeTrade
+  ? selectedActiveOrder?.tps?.[1]?.price ?? null
+  : smartFibIsExecutableAndGood && hasRealSignal && smartFibTradeLevels
+    ? smartFibTradeLevels.tp2
+    : hasRealSignal
+      ? decisionPlan.tp2 || signalPlan.tp2
+      : null;
+
+const displayTP3 = activeTrade
+  ? selectedActiveOrder?.tps?.[2]?.price ?? null
+  : smartFibIsExecutableAndGood && hasRealSignal && smartFibTradeLevels
+    ? smartFibTradeLevels.tp3
+    : hasRealSignal
+      ? decisionPlan.tp3 || signalPlan.tp3
+      : null;
     const tpHitCount = orders.reduce((sum, order) => sum + order.tps.filter((tp) => tp.hit).length, 0);
     const activeTradeState =
       activeTrade && managementBrain.action === "EARLY_EXIT" ? "EXIT WATCH" :
@@ -2928,7 +2956,7 @@ const radarDirection =
     payload,
     cooldownMs: 120000,
   })
-    .then((result: { sent?: boolean; error?: string; message?: string; status?: string }) => {
+    .then((result: { sent?: boolean }) => {
       if (result.sent) {
         console.log("[Wolvrene] Smart Fib Discord signal sent:", key);
       }
