@@ -34,8 +34,13 @@ export class SmartFibEngine {
     context.swingLow = undefined;
     context.swingHighIndex = undefined;
     context.swingLowIndex = undefined;
+    context.swingHighTime = undefined;
+    context.swingLowTime = undefined;
     context.swingHighPivot = undefined;
     context.swingLowPivot = undefined;
+    context.swingQualityScore = undefined;
+    context.swingSelectionReason = undefined;
+    context.swingAgeCandles = undefined;
     context.activeRange = undefined;
     context.activeFibLevels = [];
     context.confirmedPivots = [];
@@ -49,6 +54,8 @@ export class SmartFibEngine {
     context.activeBoxes = [];
     context.currentSignal = undefined;
     context.tradeLevels = undefined;
+    context.currentZoneState = "NONE";
+    context.closestImportantLevel = undefined;
     context.dashboardSummary = "Smart Fib rebuilding...";
   }
 
@@ -204,6 +211,10 @@ export class SmartFibEngine {
     this.updatePivotDetection(context);
     this.updateMapSelection(context, candle);
 
+    // Update closest level and zone state with current price
+    this.updateClosestLevelWithPrice(context, candle.close);
+    this.updateZoneStateWithPrice(context, candle.close);
+
     const touchSignals = this.checkLevelTouches(context, candle);
     signals.push(...touchSignals);
 
@@ -227,6 +238,96 @@ export class SmartFibEngine {
     this.updateDashboardSummary(context);
 
     return signals;
+  }
+
+  private updateClosestLevelWithPrice(context: SmartFibContext, currentPrice: number): void {
+    if (!context.activeFibLevels.length || !context.atr) {
+      context.closestImportantLevel = undefined;
+      return;
+    }
+
+    const importantLevels = context.activeFibLevels.filter(
+      (level) => level.level === 0.882 || level.level === 0.941 || level.level === 0.618 || level.level === 0.65
+    );
+
+    if (!importantLevels.length) {
+      context.closestImportantLevel = undefined;
+      return;
+    }
+
+    let closest: SmartFibLevel & { distance: number; distanceAtr: number } | undefined;
+    let minDistance = Infinity;
+
+    for (const level of importantLevels) {
+      const distance = Math.abs(currentPrice - level.price);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closest = {
+          ...level,
+          distance,
+          distanceAtr: distance / context.atr,
+        };
+      }
+    }
+
+    context.closestImportantLevel = closest;
+  }
+
+  private updateZoneStateWithPrice(context: SmartFibContext, currentPrice: number): void {
+    if (
+      !context.activeFibLevels.length ||
+      !context.atr ||
+      context.mapState === "DISABLED" ||
+      context.mapState === "INVALIDATED"
+    ) {
+      context.currentZoneState = "NONE";
+      return;
+    }
+
+    const atr = context.atr;
+    const sniperTolerance = atr * 0.12; // Tighter tolerance for sniper zones
+    const silverTolerance = atr * 0.15; // Slightly wider for silver
+
+    // Check sniper levels first (highest priority)
+    const sniperLevels = context.activeFibLevels.filter(
+      (level) => level.level === 0.882 || level.level === 0.941
+    );
+
+    for (const level of sniperLevels) {
+      const distance = Math.abs(currentPrice - level.price);
+
+      if (distance < sniperTolerance) {
+        context.currentZoneState = "SNIPER_ACTIVE";
+        return;
+      } else if (distance < sniperTolerance * 1.8) {
+        context.currentZoneState = "SNIPER_WATCH";
+        return;
+      }
+    }
+
+    // Check silver/reaction levels
+    const silverLevels = context.activeFibLevels.filter(
+      (level) => level.level === 0.618 || level.level === 0.65
+    );
+
+    for (const level of silverLevels) {
+      const distance = Math.abs(currentPrice - level.price);
+
+      if (distance < silverTolerance) {
+        context.currentZoneState = "SILVER_ACTIVE";
+        return;
+      } else if (distance < silverTolerance * 1.8) {
+        context.currentZoneState = "SILVER_WATCH";
+        return;
+      }
+    }
+
+    // If map is valid but price not near any important level
+    if (context.mapState === "LONG_MAP" || context.mapState === "SHORT_MAP" || context.mapState === "FALLBACK_ACTIVE") {
+      context.currentZoneState = "NONE";
+    } else {
+      context.currentZoneState = "NONE";
+    }
   }
 
   private updateATR(context: SmartFibContext, candle: Candle): void {
@@ -380,6 +481,7 @@ export class SmartFibEngine {
     const candidates: SmartFibMapCandidate[] = [];
     const recentPivots = context.confirmedPivots.slice(-24);
     const currentIndex = this.getCandlesForContext(context).length - 1;
+    const contextCandles = this.getCandlesForContext(context);
 
     for (let i = 0; i < recentPivots.length - 1; i++) {
       for (let j = i + 1; j < recentPivots.length; j++) {
@@ -419,18 +521,32 @@ export class SmartFibEngine {
         const age = Math.max(0, currentIndex - Math.max(swingHigh.index, swingLow.index));
         if (age > this.settings.maxMapAgeBars) continue;
 
-        const candidate: SmartFibMapCandidate = {
+        // Enhanced quality scoring
+        const quality = this.calculateEnhancedMapQuality(
+          range,
+          atr,
+          age,
           swingHigh,
           swingLow,
-          range,
-          setupType,
-          quality: this.calculateMapQuality(range, atr, age),
-          age,
-          invalidated: false,
-        };
+          currentIndex,
+          contextCandles,
+          candle,
+          setupType
+        );
 
-        if (!this.isCandidateInvalidated(candidate, candle)) {
-          candidates.push(candidate);
+        if (!this.isCandidateInvalidated(
+          { swingHigh, swingLow, range, setupType, quality, age, invalidated: false },
+          candle
+        )) {
+          candidates.push({
+            swingHigh,
+            swingLow,
+            range,
+            setupType,
+            quality,
+            age,
+            invalidated: false,
+          });
         }
       }
     }
@@ -455,20 +571,32 @@ export class SmartFibEngine {
   }
 
   private applyMapCandidate(context: SmartFibContext, candidate: SmartFibMapCandidate): void {
+    const contextCandles = this.getCandlesForContext(context);
+    const currentIndex = contextCandles.length - 1;
+
     context.activeMap = candidate;
     context.setupType = candidate.setupType;
     context.swingHigh = candidate.swingHigh.price;
     context.swingLow = candidate.swingLow.price;
     context.swingHighIndex = candidate.swingHigh.index;
     context.swingLowIndex = candidate.swingLow.index;
+    context.swingHighTime = candidate.swingHigh.time;
+    context.swingLowTime = candidate.swingLow.time;
     context.swingHighPivot = candidate.swingHigh;
     context.swingLowPivot = candidate.swingLow;
     context.activeRange = candidate.range;
+    context.swingQualityScore = candidate.quality;
+    context.swingAgeCandles = Math.max(0, currentIndex - Math.max(candidate.swingHigh.index, candidate.swingLow.index));
+    
+    // Generate selection reason
+    context.swingSelectionReason = this.generateSelectionReason(candidate, context.swingAgeCandles || 0);
+    
     context.invalidationReason = undefined;
     context.fallbackReason = undefined;
 
     this.generateFibLevels(context);
     this.checkLevelCompression(context);
+    // Note: closest level and zone state will be updated when processing candles with current price
 
     if (context.rangeQuality === "COMPRESSED") {
       context.mapState = "COMPRESSED_LEVELS";
@@ -477,6 +605,24 @@ export class SmartFibEngine {
     } else {
       context.mapState = candidate.setupType;
     }
+  }
+
+  private generateSelectionReason(candidate: SmartFibMapCandidate, ageCandles: number): string {
+    const rangeRatio = candidate.range / (candidate.range * 0.02);
+    const reasons: string[] = [];
+
+    if (candidate.quality >= 70) reasons.push("High quality swing");
+    else if (candidate.quality >= 50) reasons.push("Good swing pair");
+    else reasons.push("Valid swing pair");
+
+    if (ageCandles < 10) reasons.push("recently confirmed");
+    else if (ageCandles < 50) reasons.push("fresh structure");
+    else reasons.push("older reference");
+
+    if (rangeRatio >= 5) reasons.push("strong range");
+    else if (rangeRatio >= 3) reasons.push("good range");
+
+    return reasons.join("; ");
   }
 
   private calculateMapQuality(range: number, atr: number, age: number): number {
@@ -489,6 +635,77 @@ export class SmartFibEngine {
     else if (rangeRatio >= 1) quality += 20;
 
     quality -= age * 1.5;
+
+    return Math.max(0, quality);
+  }
+
+  private calculateEnhancedMapQuality(
+    range: number,
+    atr: number,
+    age: number,
+    swingHigh: SmartFibPivot,
+    swingLow: SmartFibPivot,
+    currentIndex: number,
+    contextCandles: Candle[],
+    currentCandle: Candle,
+    setupType: "LONG_MAP" | "SHORT_MAP"
+  ): number {
+    // Base quality from range/ATR
+    const rangeRatio = range / Math.max(atr, 0.000001);
+    let quality = 0;
+
+    if (rangeRatio >= 5) quality += 65;
+    else if (rangeRatio >= 3) quality += 50;
+    else if (rangeRatio >= 2) quality += 35;
+    else if (rangeRatio >= 1) quality += 20;
+
+    // Age penalty
+    quality -= age * 1.5;
+
+    // Bonus for recent confirmation strength (candles moved away cleanly from swing)
+    const swingConfirmCandles = Math.min(3, currentIndex - Math.max(swingHigh.index, swingLow.index));
+    let cleanMove = 0;
+    if (swingConfirmCandles > 0) {
+      for (let i = 0; i < swingConfirmCandles && currentIndex - i >= 0; i++) {
+        const checkCandle = contextCandles[currentIndex - i];
+        if (!checkCandle) continue;
+        
+        if (setupType === "LONG_MAP") {
+          // After swing low, candles should move up
+          if (checkCandle.close > swingLow.price) cleanMove += 3;
+        } else {
+          // After swing high, candles should move down
+          if (checkCandle.close < swingHigh.price) cleanMove += 3;
+        }
+      }
+      quality += cleanMove;
+    }
+
+    // Retest/respect bonus: if price bounced back toward swing after moving away
+    const testCandles = Math.min(8, currentIndex - Math.max(swingHigh.index, swingLow.index));
+    let retestScore = 0;
+    if (testCandles > swingConfirmCandles) {
+      for (let i = swingConfirmCandles; i < testCandles && currentIndex - i >= 0; i++) {
+        const checkCandle = contextCandles[currentIndex - i];
+        if (!checkCandle) continue;
+        
+        if (setupType === "LONG_MAP" && checkCandle.low <= swingLow.price + range * 0.05) {
+          retestScore += 2;
+        } else if (setupType === "SHORT_MAP" && checkCandle.high >= swingHigh.price - range * 0.05) {
+          retestScore += 2;
+        }
+      }
+      quality += Math.min(retestScore, 12);
+    }
+
+    // Dominance bonus: if this is clearly the strongest swing pair relative to others
+    const dominanceBonus = age < 10 ? 8 : age < 30 ? 5 : 0;
+    quality += dominanceBonus;
+
+    // Distance from current price penalty: favor zones not too far from price for scalp
+    const distancePercent = Math.abs(currentCandle.close - (setupType === "LONG_MAP" ? swingLow.price : swingHigh.price)) / range;
+    if (distancePercent < 0.3) quality += 6;
+    else if (distancePercent > 0.8) quality -= 4;
 
     return Math.max(0, quality);
   }
@@ -514,12 +731,20 @@ export class SmartFibEngine {
           ? context.swingHigh - context.activeRange * levelConfig.value
           : context.swingLow + context.activeRange * levelConfig.value;
 
+      let zoneType: "SNIPER" | "SILVER" | "SUPPORT" | "NONE" = "SUPPORT";
+      if (levelConfig.value === 0.882 || levelConfig.value === 0.941) {
+        zoneType = "SNIPER";
+      } else if (levelConfig.value === 0.618 || levelConfig.value === 0.65) {
+        zoneType = "SILVER";
+      }
+
       levels.push({
         level: levelConfig.value,
         price,
         name: levelConfig.name,
         enabled: true,
         priority: this.getLevelPriority(levelConfig.value),
+        zoneType,
       });
     }
 
@@ -805,41 +1030,77 @@ export class SmartFibEngine {
   findStrongestEntryZone(
     context: SmartFibContext,
     currentPrice: number
-  ): { level: number; name: string; price: number; quality: string } | null {
+  ): {
+    level: number;
+    name: string;
+    price: number;
+    quality: string;
+    zoneType: "SNIPER" | "SILVER" | "SUPPORT" | "NONE";
+    distance: number;
+    distanceAtr: number;
+    priority: number;
+    side: "LONG" | "SHORT";
+    invalidationPrice: number | null;
+  } | null {
     if (!context.activeFibLevels.length || context.mapState === "DISABLED") return null;
 
+    const atr = context.atr || (context.activeRange || 1) * 0.05;
+    const tolerance = atr * 0.15;
+
+    // Check sniper levels first (0.882, 0.941)
     const sniperLevels = context.activeFibLevels.filter(
       (level) => level.level === 0.882 || level.level === 0.941
     );
-
-    const reactionLevels = context.activeFibLevels.filter(
-      (level) => level.level === 0.618 || level.level === 0.65
-    );
-
-    const tolerance = (context.atr || currentPrice * 0.01) * 0.15;
 
     for (const level of sniperLevels.sort((a, b) => b.priority - a.priority)) {
       const distance = Math.abs(currentPrice - level.price);
 
       if (distance <= tolerance * 2) {
+        const invalidationPrice =
+          context.setupType === "LONG_MAP"
+            ? (context.swingLow ?? 0) - atr * this.settings.invalidationAtrBuffer
+            : (context.swingHigh ?? 0) + atr * this.settings.invalidationAtrBuffer;
+
         return {
           level: level.level,
-          name: level.name || "SNIPER",
+          name: level.name || `SNIPER ${level.level}`,
           price: level.price,
           quality: distance < tolerance ? "ACTIVE" : "NEARBY",
+          zoneType: "SNIPER",
+          distance,
+          distanceAtr: distance / atr,
+          priority: level.priority,
+          side: context.setupType === "LONG_MAP" ? "LONG" : "SHORT",
+          invalidationPrice,
         };
       }
     }
+
+    // Check reaction/silver levels (0.618, 0.65)
+    const reactionLevels = context.activeFibLevels.filter(
+      (level) => level.level === 0.618 || level.level === 0.65
+    );
 
     for (const level of reactionLevels.sort((a, b) => b.priority - a.priority)) {
       const distance = Math.abs(currentPrice - level.price);
 
       if (distance <= tolerance * 2) {
+        const invalidationPrice =
+          context.setupType === "LONG_MAP"
+            ? (context.swingLow ?? 0) - atr * this.settings.invalidationAtrBuffer
+            : (context.swingHigh ?? 0) + atr * this.settings.invalidationAtrBuffer;
+
         return {
           level: level.level,
-          name: level.level === 0.618 ? "SILVER" : "GOLD",
+          name: level.name || `SILVER ${level.level}`,
           price: level.price,
           quality: distance < tolerance ? "ACTIVE" : "NEARBY",
+          zoneType: "SILVER",
+          distance,
+          distanceAtr: distance / atr,
+          priority: level.priority,
+          side: context.setupType === "LONG_MAP" ? "LONG" : "SHORT",
+          invalidationPrice,
         };
       }
     }

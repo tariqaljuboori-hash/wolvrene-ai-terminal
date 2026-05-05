@@ -26,6 +26,9 @@ export interface SmartFibLevel {
   enabled: boolean;
   priority: number;
   quality?: string;
+  zoneType?: "SNIPER" | "SILVER" | "SUPPORT" | "NONE";
+  distance?: number;
+  distanceAtr?: number;
 }
 
 export interface SmartFibTradeLevels {
@@ -112,8 +115,13 @@ export interface SmartFibContext {
   swingLow?: number;
   swingHighIndex?: number;
   swingLowIndex?: number;
+  swingHighTime?: number;
+  swingLowTime?: number;
   swingHighPivot?: SmartFibPivot;
   swingLowPivot?: SmartFibPivot;
+  swingQualityScore?: number;
+  swingSelectionReason?: string;
+  swingAgeCandles?: number;
 
   activeRange?: number;
   activeFibLevels: SmartFibLevel[];
@@ -128,6 +136,9 @@ export interface SmartFibContext {
 
   atr?: number;
   rangeQuality?: "TOO_SMALL" | "COMPRESSED" | "GOOD";
+
+  currentZoneState?: "NONE" | "SILVER_WATCH" | "SILVER_ACTIVE" | "SNIPER_WATCH" | "SNIPER_ACTIVE" | "SNIPER_CONFLICT";
+  closestImportantLevel?: SmartFibLevel & { distance: number; distanceAtr: number };
 
   activeBoxes: SmartFibBox[];
 

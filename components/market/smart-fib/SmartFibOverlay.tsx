@@ -16,6 +16,12 @@ type DrawableFibLevel = SmartFibLevel & {
   y: number;
 };
 
+type DrawableAnchor = {
+  type: "HIGH" | "LOW";
+  price: number;
+  y: number;
+};
+
 export default function SmartFibOverlay({
   context,
   chartApi,
@@ -52,21 +58,90 @@ export default function SmartFibOverlay({
     })
     .filter(Boolean) as DrawableFibLevel[];
 
-  if (!drawableLevels.length) {
+  // Prepare swing anchors for visualization
+  const drawableAnchors: DrawableAnchor[] = [];
+  
+  if (context.swingHigh !== undefined) {
+    const yHigh = candleSeries.priceToCoordinate(context.swingHigh);
+    if (typeof yHigh === "number" && !Number.isNaN(yHigh)) {
+      drawableAnchors.push({
+        type: "HIGH",
+        price: context.swingHigh,
+        y: yHigh,
+      });
+    }
+  }
+
+  if (context.swingLow !== undefined) {
+    const yLow = candleSeries.priceToCoordinate(context.swingLow);
+    if (typeof yLow === "number" && !Number.isNaN(yLow)) {
+      drawableAnchors.push({
+        type: "LOW",
+        price: context.swingLow,
+        y: yLow,
+      });
+    }
+  }
+
+  if (!drawableLevels.length && !drawableAnchors.length) {
     return null;
   }
 
-  const side = context.setupType === "SHORT_MAP" ? "SHORT" : "LONG";
+  const mapType = context.setupType === "SHORT_MAP" ? "SHORT" : "LONG";
 
   return (
     <div className="pointer-events-none absolute inset-0 z-40 overflow-hidden">
       <div className="absolute left-3 top-3 rounded border border-orange-400/50 bg-black/80 px-3 py-2 text-[10px] font-bold text-orange-300">
-        Smart Fib {context.mapState} · {drawableLevels.length} levels
+        Smart Fib {context.mapState} · Map: {mapType} · {drawableLevels.length} levels
+        {context.swingQualityScore !== undefined && (
+          <span className="ml-2 text-amber-300">Quality: {context.swingQualityScore.toFixed(0)}</span>
+        )}
       </div>
 
+      {/* Swing Anchors */}
+      {drawableAnchors.map((anchor) => (
+        <div
+          key={`${context.symbol}-${context.timeframe}-swing-${anchor.type}`}
+          className="absolute left-0 right-0"
+          style={{
+            top: `${anchor.y}px`,
+            height: "2px",
+            background: anchor.type === "HIGH" ? "rgba(239, 68, 68, 0.6)" : "rgba(34, 197, 94, 0.6)",
+            boxShadow: anchor.type === "HIGH" 
+              ? "0 0 12px rgba(239, 68, 68, 0.8)" 
+              : "0 0 12px rgba(34, 197, 94, 0.8)",
+          }}
+        >
+          <div
+            className="absolute left-2 -translate-y-1/2 rounded px-2 py-[2px] text-[9px] font-bold"
+            style={{
+              top: 0,
+              color: anchor.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)",
+              background: "rgba(0,0,0,0.8)",
+              border: `1px solid ${anchor.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)"}`,
+            }}
+          >
+            Swing {anchor.type}
+          </div>
+
+          <div
+            className="absolute right-2 -translate-y-1/2 rounded px-2 py-[2px] text-[10px] font-bold"
+            style={{
+              top: 0,
+              color: anchor.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)",
+              background: "rgba(0,0,0,0.8)",
+              border: `1px solid ${anchor.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)"}`,
+            }}
+          >
+            {anchor.price.toFixed(2)}
+          </div>
+        </div>
+      ))}
+
+      {/* Fib Levels */}
       {drawableLevels.map((level) => {
-        const color = getFibLevelColor(level.level);
-        const label = `${side} ${level.name || level.level} · ${level.price.toFixed(2)}`;
+        const color = getFibLevelColor(level.level, level.zoneType);
+        const label = level.name || `Fib ${level.level}`;
 
         return (
           <div
@@ -88,7 +163,7 @@ export default function SmartFibOverlay({
                 border: `1px solid ${color}`,
               }}
             >
-              Fib {level.level}
+              {level.level}
             </div>
 
             <div
@@ -100,7 +175,7 @@ export default function SmartFibOverlay({
                 border: `1px solid ${color}`,
               }}
             >
-              {label}
+              {label} · {level.price.toFixed(2)}
             </div>
           </div>
         );
@@ -109,22 +184,27 @@ export default function SmartFibOverlay({
   );
 }
 
-function getFibLevelColor(level: number): string {
+function getFibLevelColor(level: number, zoneType?: string): string {
+  // Sniper zones: Gold/Orange
   if (level === 0.882 || level === 0.941) {
     return "rgba(255, 184, 0, 0.95)";
   }
 
+  // Silver/Reaction zones: Green
   if (level === 0.618 || level === 0.65 || level === 0.786) {
     return "rgba(34, 197, 94, 0.95)";
   }
 
+  // Mid point: Blue
   if (level === 0.5) {
     return "rgba(59, 130, 246, 0.9)";
   }
 
+  // Swing edges: Red
   if (level === 1 || level === 0) {
     return "rgba(239, 68, 68, 0.9)";
   }
 
+  // Extended levels and others: Gray
   return "rgba(148, 163, 184, 0.82)";
 }

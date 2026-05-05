@@ -130,7 +130,123 @@ export type DecisionEngineInput = {
   activeExecutionTrade: ActiveExecutionTrade | null;
   allowMultiTimeframeTrades: boolean;
   tradeRecalcCooldownCycles: number;
+  
+  // Smart Fib context
+  smartFibMapState?: string;
+  smartFibSetupType?: "LONG_MAP" | "SHORT_MAP" | "WAITING";
+  smartFibSwingHigh?: number;
+  smartFibSwingLow?: number;
+  smartFibSwingHighIndex?: number;
+  smartFibSwingLowIndex?: number;
+  smartFibSwingHighTime?: number;
+  smartFibSwingLowTime?: number;
+  smartFibActiveRange?: number;
+  smartFibRangeQuality?: "TOO_SMALL" | "COMPRESSED" | "GOOD";
+  smartFibSwingQualityScore?: number;
+  smartFibSwingSelectionReason?: string;
+  smartFibSwingAgeCandles?: number;
+  smartFibFibLevelCount?: number;
+  smartFibCurrentZoneState?: "NONE" | "SILVER_WATCH" | "SILVER_ACTIVE" | "SNIPER_WATCH" | "SNIPER_ACTIVE" | "SNIPER_CONFLICT";
+  smartFibClosestLevelDistance?: number;
+  smartFibClosestLevelDistanceAtr?: number;
+  smartFibClosestLevelPrice?: number;
+  smartFibClosestLevelName?: string;
+  smartFibClosestLevelZoneType?: "SNIPER" | "SILVER" | "SUPPORT" | "NONE";
+  smartFibInvalidationPrice?: number;
 };
+
+type SmartFibEvaluation = {
+  mapValid: boolean;
+  swingQualityAcceptable: boolean;
+  zoneState: "NONE" | "SILVER_WATCH" | "SILVER_ACTIVE" | "SNIPER_WATCH" | "SNIPER_ACTIVE" | "MAP_ONLY";
+  directionAlign: boolean;
+  directionConflict: boolean;
+  priceNearImportantLevel: boolean;
+  qualityBoost: number;
+  blockedReason: string;
+};
+
+function evaluateSmartFibZone(input: DecisionEngineInput): SmartFibEvaluation {
+  const result: SmartFibEvaluation = {
+    mapValid: false,
+    swingQualityAcceptable: false,
+    zoneState: "NONE",
+    directionAlign: false,
+    directionConflict: false,
+    priceNearImportantLevel: false,
+    qualityBoost: 0,
+    blockedReason: "",
+  };
+
+  // Check if Smart Fib map is valid
+  if (
+    !input.smartFibMapState ||
+    input.smartFibMapState === "DISABLED" ||
+    input.smartFibMapState === "WAITING_FOR_CANDLES" ||
+    input.smartFibMapState === "WAITING_FOR_SWING_PAIR" ||
+    input.smartFibMapState === "INVALIDATED"
+  ) {
+    result.blockedReason = `Smart Fib map not ready: ${input.smartFibMapState || "disabled"}`;
+    return result;
+  }
+
+  // Check swing quality
+  const minSwingQuality = 40;
+  if (!input.smartFibSwingQualityScore || input.smartFibSwingQualityScore < minSwingQuality) {
+    result.blockedReason = `Smart Fib swing quality too low: ${input.smartFibSwingQualityScore || 0} < ${minSwingQuality}`;
+    return result;
+  }
+
+  result.mapValid = true;
+  result.swingQualityAcceptable = true;
+
+  // Check range quality
+  if (input.smartFibRangeQuality === "COMPRESSED" || input.smartFibRangeQuality === "TOO_SMALL") {
+    result.blockedReason = `Smart Fib range quality: ${input.smartFibRangeQuality}`;
+    result.mapValid = false;
+    return result;
+  }
+
+  // Evaluate zone state (this is already tracked in context, just use it)
+  result.zoneState = input.smartFibCurrentZoneState || "NONE";
+
+  // Check if price is actually near important levels
+  result.priceNearImportantLevel =
+    input.smartFibCurrentZoneState === "SNIPER_ACTIVE" ||
+    input.smartFibCurrentZoneState === "SNIPER_WATCH" ||
+    input.smartFibCurrentZoneState === "SILVER_ACTIVE" ||
+    input.smartFibCurrentZoneState === "SILVER_WATCH";
+
+  // If price is not near important levels, mark as MAP_ONLY (visual reference only)
+  if (!result.priceNearImportantLevel && input.smartFibMapState !== "INVALIDATED") {
+    result.zoneState = "MAP_ONLY";
+  }
+
+  // Check direction alignment with Smart Fib setup
+  if (input.smartFibSetupType === "LONG_MAP") {
+    result.directionAlign = true;
+  } else if (input.smartFibSetupType === "SHORT_MAP") {
+    result.directionAlign = true;
+  }
+
+  // Quality boost based on zone state (only if price is actually near level)
+  if (result.priceNearImportantLevel) {
+    if (input.smartFibCurrentZoneState === "SNIPER_ACTIVE") {
+      result.qualityBoost = 24; // High priority zone
+    } else if (input.smartFibCurrentZoneState === "SNIPER_WATCH") {
+      result.qualityBoost = 16; // Medium priority watch zone
+    } else if (input.smartFibCurrentZoneState === "SILVER_ACTIVE") {
+      result.qualityBoost = 14; // Silver reaction confirmed
+    } else if (input.smartFibCurrentZoneState === "SILVER_WATCH") {
+      result.qualityBoost = 8; // Silver watch zone
+    }
+  } else {
+    // Price far from levels: no boost, treat as MAP_ONLY
+    result.qualityBoost = 0;
+  }
+
+  return result;
+}
 
 function getInstitutionalPrecision(input: DecisionEngineInput): InstitutionalPrecision {
   const mark = input.livePrice || input.lastClose || input.signalPlan.entry || 0;
@@ -218,6 +334,7 @@ function getInstitutionalPrecision(input: DecisionEngineInput): InstitutionalPre
 
 export function buildRawDecisionPlan(input: DecisionEngineInput): { institutionalPrecision: InstitutionalPrecision; rawDecisionPlan: DecisionPlan } {
   const institutionalPrecision = getInstitutionalPrecision(input);
+  const smartFibEval = evaluateSmartFibZone(input);
   const mark = input.livePrice || input.lastClose || input.signalPlan.entry || 0;
   const time = typeof input.lastCandleTime === "number" ? input.lastCandleTime : Math.floor(Date.now() / 1000);
 
@@ -248,8 +365,9 @@ export function buildRawDecisionPlan(input: DecisionEngineInput): { institutiona
   const volatilityAdjust = input.candlesVolatility === "HIGH" ? -8 : input.candlesVolatility === "LOW" ? -3 : 4;
   const institutionalBoost = Math.round((institutionalPrecision.precisionScore - 60) * 0.45);
   const conflictPenalty = institutionalPrecision.hardConflict ? -42 : institutionalPrecision.triggerOpposesStructure || institutionalPrecision.liquidityOpposesTrigger ? -22 : 0;
-  const proSignal = Boolean(direction && institutionalPrecision.eliteAllowed && (directionalAgreement || input.liquidityState.trapDirection === direction || input.triggerValidation.quality === "SNIPER"));
-  const quality = Math.round(Math.max(0, Math.min(100, input.signalPlan.confidence + input.structureState.score + triggerScore + liquidityBoost + triggerBoost + agreementBoost + volatilityAdjust + institutionalBoost + conflictPenalty - 32)));
+  const smartFibBoost = smartFibEval.mapValid && smartFibEval.swingQualityAcceptable ? smartFibEval.qualityBoost : 0;
+  const proSignal = Boolean(direction && institutionalPrecision.eliteAllowed && (directionalAgreement || input.liquidityState.trapDirection === direction || input.triggerValidation.quality === "SNIPER" || smartFibEval.zoneState === "SNIPER_ACTIVE"));
+  const quality = Math.round(Math.max(0, Math.min(100, input.signalPlan.confidence + input.structureState.score + triggerScore + liquidityBoost + triggerBoost + agreementBoost + volatilityAdjust + institutionalBoost + conflictPenalty + smartFibBoost - 32)));
   const activeTradeBlocking = Boolean(
     input.activeExecutionTrade &&
       input.activeExecutionTrade.symbol === input.selectedSymbol &&
@@ -282,24 +400,28 @@ export function buildRawDecisionPlan(input: DecisionEngineInput): { institutiona
     input.signalPlan.entry && input.signalPlan.sl ? Math.abs(input.signalPlan.entry - input.signalPlan.sl) : 0,
     mark * 0.0022
   );
-  const entry = input.signalPlan.entry || mark;
-  const sl = input.signalPlan.sl || (direction === "LONG" ? entry - riskDistance : entry + riskDistance);
+  const entry = input.signalPlan.entry || input.smartFibClosestLevelPrice || mark;
+  const sl = input.signalPlan.sl || input.smartFibInvalidationPrice || (direction === "LONG" ? entry - riskDistance : entry + riskDistance);
   const tp1 = input.signalPlan.tp1 || (direction === "LONG" ? entry + riskDistance * 1.25 : entry - riskDistance * 1.25);
   const tp2 = input.signalPlan.tp2 || (direction === "LONG" ? entry + riskDistance * 2.0 : entry - riskDistance * 2.0);
   const tp3 = input.signalPlan.tp3 || (direction === "LONG" ? entry + riskDistance * 3.0 : entry - riskDistance * 3.0);
   const invalidation = direction === "LONG" ? Math.min(sl, input.structureState.lastSwingLow || sl) : Math.max(sl, input.structureState.lastSwingHigh || sl);
 
+  const smartFibInfo = smartFibEval.mapValid ? ` · Smart Fib ${smartFibEval.zoneState}` : "";
   const action = phase === "EXECUTE"
-    ? `ENTER NOW ${direction}: institutional ${institutionalPrecision.institutionalGrade} alignment confirmed. Use pro-signal risk control.`
+    ? `ENTER NOW ${direction}: institutional ${institutionalPrecision.institutionalGrade} alignment confirmed${smartFibInfo}. Use pro-signal risk control.`
     : phase === "VALIDATED"
-    ? `WAIT RETEST ${direction}: setup validated, but precision filter wants cleaner continuation/retest.`
+    ? `WAIT RETEST ${direction}: setup validated${smartFibInfo}, but precision filter wants cleaner continuation/retest.`
     : phase === "SPAWNED"
-    ? `EARLY WATCH ${direction}: idea spawned, not mature enough for execution.`
+    ? `EARLY WATCH ${direction}: idea spawned${smartFibInfo}, not mature enough for execution.`
     : phase === "FILTERED"
-    ? `FILTERED: ${institutionalPrecision.reason}`
+    ? `FILTERED: ${institutionalPrecision.reason}${smartFibEval.mapValid ? ` · ${smartFibEval.blockedReason}` : ""}`
     : "Scan only. No institutional-grade decision yet.";
 
-  const reason = [institutionalPrecision.reason, input.structureState.summary, input.liquidityState.summary, input.triggerValidation.summary, input.signalPlan.reason, proSignal ? "Elite pro signal conditions detected." : "Waiting for stronger institutional alignment."].filter(Boolean).join(" ");
+  const smartFibReason = smartFibEval.mapValid 
+    ? `Smart Fib zone ${smartFibEval.zoneState} · quality ${Math.round((input.smartFibSwingQualityScore || 0))}% · range ${input.smartFibRangeQuality || "UNKNOWN"}`
+    : smartFibEval.blockedReason;
+  const reason = [institutionalPrecision.reason, smartFibReason, input.structureState.summary, input.liquidityState.summary, input.triggerValidation.summary, input.signalPlan.reason, proSignal ? "Elite pro signal conditions detected." : "Waiting for stronger institutional alignment."].filter(Boolean).join(" ");
   const id = `${input.timeframe}-${direction || "WAIT"}-${phase}-${time}`;
 
   return {
