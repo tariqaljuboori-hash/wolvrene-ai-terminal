@@ -30,25 +30,51 @@ export const TIMEFRAMES = [
   "1M",
 ];
 
-export async function getBitgetCandles(tf: string): Promise<Candle[]> {
-  const res = await fetch(
-    `https://api.bitget.com/api/v3/market/candles?category=USDT-FUTURES&symbol=BTCUSDT&interval=${tf}&type=MARKET&limit=240`,
-    { cache: "no-store" }
+export async function getBitgetCandles(tf: string, limit: number = 1000, enableBackfill: boolean = true, maxBatches: number = 5): Promise<Candle[]> {
+  const candles: Candle[] = [];
+  let endTime: number | undefined;
+  const batchSize = 240; // API max per request
+  const batches = enableBackfill
+    ? Math.min(Math.ceil(limit / batchSize), maxBatches)
+    : 1;
+
+  for (let i = 0; i < batches; i++) {
+    const currentLimit = Math.min(batchSize, limit - candles.length);
+    if (currentLimit <= 0) break;
+
+    let url = `https://api.bitget.com/api/v3/market/candles?category=USDT-FUTURES&symbol=BTCUSDT&interval=${tf}&type=MARKET&limit=${currentLimit}`;
+    if (endTime) {
+      url += `&endTime=${endTime}`;
+    }
+
+    const res = await fetch(url, { cache: "no-store" });
+    const data = await res.json();
+
+    if (!data?.data) break;
+
+    const batchCandles = data.data
+      .map((candle: string[]) => ({
+        time: Number(candle[0]) / 1000,
+        open: Number(candle[1]),
+        high: Number(candle[2]),
+        low: Number(candle[3]),
+        close: Number(candle[4]),
+      }))
+      .filter((c: Candle) => c.time && c.open && c.high && c.low && c.close)
+      .sort((a: Candle, b: Candle) => a.time - b.time);
+
+    if (batchCandles.length === 0) break;
+
+    candles.push(...batchCandles);
+    endTime = Math.floor(batchCandles[0].time * 1000) - 1; // Set endTime to before the earliest candle in this batch
+  }
+
+  // Remove duplicates and sort
+  const uniqueCandles = candles.filter((candle, index, arr) =>
+    arr.findIndex(c => c.time === candle.time) === index
   );
 
-  const data = await res.json();
-  if (!data?.data) return [];
-
-  return data.data
-    .map((candle: string[]) => ({
-      time: Number(candle[0]) / 1000,
-      open: Number(candle[1]),
-      high: Number(candle[2]),
-      low: Number(candle[3]),
-      close: Number(candle[4]),
-    }))
-    .filter((c: Candle) => c.time && c.open && c.high && c.low && c.close)
-    .sort((a: Candle, b: Candle) => a.time - b.time);
+  return uniqueCandles.sort((a, b) => a.time - b.time);
 }
 
 export async function getBitgetTickerStats() {

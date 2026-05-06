@@ -940,6 +940,20 @@ type WolvreneUserPrefs = {
   terminalTab: "dashboard" | "radar" | "analytics" | "journal" | "backtest" | "pro";
   hideUI: boolean;
   smartFibEnabled: boolean;
+  showSmartFibChartDebug: boolean;
+  showSmartFibChartPanel: boolean;
+  showSmartFibAnchorMarkers: boolean;
+  enableBackfill: boolean;
+  discordEnabled: boolean;
+  discordWebhookUrl: string;
+  discordSignalTimeframes: string[];
+  discordSendExecutableSignals: boolean;
+  discordSendWatchSignals: boolean;
+  discordSendFilteredSignals: boolean;
+  discordCooldownMs: number;
+  enableCandleBackfill: boolean;
+  preferredCandleHistoryLimit: number;
+  maxBackfillBatches: number;
 };
 
 function userPrefsKey() { return "wolvrene_user_prefs_v37"; }
@@ -956,6 +970,20 @@ const defaultUserPrefs: WolvreneUserPrefs = {
   terminalTab: "dashboard",
   hideUI: false,
   smartFibEnabled: false,
+  showSmartFibChartDebug: false,
+  showSmartFibChartPanel: true,
+  showSmartFibAnchorMarkers: false,
+  enableBackfill: true,
+  discordEnabled: false,
+  discordWebhookUrl: "",
+  discordSignalTimeframes: ["15m", "1H", "4H"],
+  discordSendExecutableSignals: true,
+  discordSendWatchSignals: false,
+  discordSendFilteredSignals: false,
+  discordCooldownMs: 30000,
+  enableCandleBackfill: true,
+  preferredCandleHistoryLimit: 1000,
+  maxBackfillBatches: 5,
 };
 
 const SCALP_TIMEFRAMES = ["1m", "3m", "5m", "15m"] as const;
@@ -996,6 +1024,20 @@ export default function WolvreneTerminal() {
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [smartFibEnabled, setSmartFibEnabled] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).smartFibEnabled || false);
+  const [showSmartFibChartDebug, setShowSmartFibChartDebug] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).showSmartFibChartDebug ?? false);
+  const [showSmartFibChartPanel, setShowSmartFibChartPanel] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).showSmartFibChartPanel ?? true);
+  const [showSmartFibAnchorMarkers, setShowSmartFibAnchorMarkers] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).showSmartFibAnchorMarkers ?? false);
+  const [enableBackfill, setEnableBackfill] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).enableBackfill ?? true);
+  const [discordEnabled, setDiscordEnabled] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordEnabled ?? false);
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordWebhookUrl || "");
+  const [discordSignalTimeframes, setDiscordSignalTimeframes] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordSignalTimeframes || ["15m", "1H", "4H"]);
+  const [discordSendExecutableSignals, setDiscordSendExecutableSignals] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordSendExecutableSignals ?? true);
+  const [discordSendWatchSignals, setDiscordSendWatchSignals] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordSendWatchSignals ?? false);
+  const [discordSendFilteredSignals, setDiscordSendFilteredSignals] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordSendFilteredSignals ?? false);
+  const [discordCooldownMs, setDiscordCooldownMs] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).discordCooldownMs ?? 30000);
+  const [enableCandleBackfill, setEnableCandleBackfill] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).enableCandleBackfill ?? true);
+  const [preferredCandleHistoryLimit, setPreferredCandleHistoryLimit] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).preferredCandleHistoryLimit ?? 1000);
+  const [maxBackfillBatches, setMaxBackfillBatches] = useState(() => storageGet<WolvreneUserPrefs>(userPrefsKey(), defaultUserPrefs).maxBackfillBatches ?? 5);
   const [smartFibSettingsOpen, setSmartFibSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -1879,10 +1921,11 @@ const impulseBoost =
     const smartFibDirection = smartFibContext.setupType === "LONG_MAP" ? "LONG" :
                              smartFibContext.setupType === "SHORT_MAP" ? "SHORT" : 
                              null;
+    const rangeAtrRatio = smartFibContext.activeRange && smartFibContext.atr ? smartFibContext.activeRange / smartFibContext.atr : 0;
     const smartFibExecutable = smartFibContext.enabled && 
                               (smartFibContext.mapState === "LONG_MAP" || smartFibContext.mapState === "SHORT_MAP") &&
                               smartFibContext.tradeLevels !== undefined &&
-                              smartFibContext.rangeQuality !== "COMPRESSED";
+                              (smartFibContext.rangeQuality !== "COMPRESSED" || rangeAtrRatio >= 2.0);
 
     // RADAR: provides confirmation/filtering
     const radarState = marketRadarLoading ? "RADAR_LOADING" : (marketRadarIntelligence?.state ?? "DATA_UNAVAILABLE");
@@ -1914,7 +1957,7 @@ const radarDirection =
       alignmentStatus = "SMART_FIB_WAITING";
       radarGateReason = `Smart Fib invalidated: ${smartFibContext.invalidationReason || "swing broken"}`;
       radarGateResult = "BLOCKED";
-    } else if (smartFibContext.rangeQuality === "COMPRESSED") {
+    } else if (smartFibContext.rangeQuality === "COMPRESSED" && rangeAtrRatio < 2.0) {
       alignmentStatus = "SMART_FIB_WAITING";
       radarGateReason = "Smart Fib levels too compressed";
       radarGateResult = "BLOCKED";
@@ -2934,8 +2977,13 @@ const displayTP3 = activeTrade
     storageSet<WolvreneUserPrefs>(userPrefsKey(), {
       selectedSymbol, timeframe, marginMode, orderType, orderSide,
       draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled,
+      showSmartFibChartDebug, showSmartFibChartPanel, showSmartFibAnchorMarkers, enableBackfill,
+      discordEnabled, discordWebhookUrl, discordSignalTimeframes,
+      discordSendExecutableSignals, discordSendWatchSignals, discordSendFilteredSignals,
+      discordCooldownMs,
+      enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches,
     });
-  }, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled]);
+}, [hydrated, selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled, showSmartFibChartDebug, showSmartFibChartPanel, showSmartFibAnchorMarkers, enableBackfill, discordEnabled, discordWebhookUrl, discordSignalTimeframes, discordSendExecutableSignals, discordSendWatchSignals, discordSendFilteredSignals, enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches]);
 
   useEffect(() => {
     if (!executionPrice || !executionUsd) return;
@@ -3174,17 +3222,37 @@ useEffect(() => {
   }
 
   function sendDiscordSignalNow() {
+    if (!discordEnabled || !discordWebhookUrl) {
+      addJournal("Discord disabled or no webhook set");
+      return;
+    }
+    if (!discordSignalTimeframes.includes(timeframe)) {
+      addJournal(`Discord signal skipped: timeframe ${timeframe} not selected`);
+      return;
+    }
     if (v25FinalBrain.action !== "ENTER NOW" || !v25FinalBrain.finalDirection || !v25FinalBrain.entry) {
       addJournal("Discord signal skipped: no valid decision plan");
       return;
     }
-    if (decisionPlan.quality < externalAlertSettings.minSignalConfidence || v23EliteEngine.sniperScore < 86) {
-      addJournal(`Discord signal skipped: quality ${decisionPlan.quality}% / sniper ${v23EliteEngine.sniperScore}% below elite threshold`);
+    if (decisionPlan.quality < 86 || v23EliteEngine.sniperScore < 86) {
+      addJournal(`Discord signal skipped: quality ${decisionPlan.quality}% / sniper ${v23EliteEngine.sniperScore}% below threshold`);
       return;
+    }
+    // Don't send fake signals for filtered decisions
+    if (decisionPlan.phase === "FILTERED") {
+      if (!discordSendFilteredSignals) {
+        addJournal("Discord signal skipped: filtered signals disabled");
+        return;
+      }
+    } else if (decisionPlan.phase === "EXECUTE") {
+      if (!discordSendExecutableSignals) {
+        addJournal("Discord signal skipped: executable signals disabled");
+        return;
+      }
     }
     const compact = buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL");
     sendExternalAlert("WOLVRENE DECISION SIGNAL", `${decisionPlan.phase} ${decisionPlan.direction} at ${decisionPlan.entry ? formatPrice(decisionPlan.entry) : "market"}`, compact);
-    addJournal(`Discord decision sent: ${decisionPlan.phase} ${decisionPlan.quality}%`);
+    addJournal(`Discord decision sent: ${decisionPlan.phase} ${decisionPlan.quality}% on ${timeframe}`);
   }
 
   function saveJournalNote() {
@@ -5182,7 +5250,7 @@ function orderRoi(order: TradeOrder) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[84px_280px_minmax(0,1fr)_350px]">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[84px_240px_minmax(0,1fr)_320px]">
           {!hideUI && (
             <aside className={`${terminalPanel} flex flex-col items-center gap-2 p-2.5`}>
               {[
@@ -5269,6 +5337,84 @@ function orderRoi(order: TradeOrder) {
                   </p>
                 )}
               </div>
+
+              {smartFibEnabled && (
+                <>
+                  <div className="rounded-xl border border-green-700/40 bg-black/50 p-2 text-xs">
+                    <div className="mb-1 flex items-center justify-between"><p className="font-bold text-green-300">Precision State</p></div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-300">
+                      <div>Phase: <span className="text-green-200">{brainDecision.phase}</span></div>
+                      <div>Direction: <span className="text-green-200">{brainDecision.direction || "WAIT"}</span></div>
+                      <div>Master: <span className="text-green-200">{v25FinalBrain.activeTradeState}</span></div>
+                      <div>Entry: <span className="text-green-200">{v25FinalBrain.entryQuality}</span></div>
+                    </div>
+                    <p className="mt-1 text-[10px] text-zinc-400">{v25FinalBrain.summary}</p>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-700/40 bg-black/50 p-2 text-xs">
+                    <div className="mb-1 flex items-center justify-between"><p className="font-bold text-blue-300">Smart Fib Map</p></div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-300">
+                      <div>State: <span className="text-blue-200">{smartFibContext.mapState}</span></div>
+                      <div>Setup: <span className="text-blue-200">{smartFibContext.setupType}</span></div>
+                      <div>Timeframe: <span className="text-blue-200">{timeframe}</span></div>
+                      <div>Swing High: <span className="text-blue-200">{smartFibContext.swingHigh?.toFixed(2) || 'N/A'}</span></div>
+                      <div>Swing Low: <span className="text-blue-200">{smartFibContext.swingLow?.toFixed(2) || 'N/A'}</span></div>
+                      <div>Active Range: <span className="text-blue-200">{smartFibContext.activeRange?.toFixed(2) || 'N/A'}</span></div>
+                      <div>ATR: <span className="text-blue-200">{smartFibContext.atr?.toFixed(2) || 'N/A'}</span></div>
+                      <div>Range/ATR: <span className="text-blue-200">{smartFibContext.activeRange && smartFibContext.atr ? (smartFibContext.activeRange / smartFibContext.atr).toFixed(2) : 'N/A'}</span></div>
+                      <div>Fib Levels: <span className="text-blue-200">{smartFibContext.activeFibLevels.length}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-purple-700/40 bg-black/50 p-2 text-xs">
+                    <div className="mb-1 flex items-center justify-between"><p className="font-bold text-purple-300">Smart Fib Debug</p></div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-300">
+                      <div>Confirmed Pivots: <span className="text-purple-200">{smartFibContext.confirmedPivots?.length || 0}</span></div>
+                      <div>Candidates: <span className="text-purple-200">{smartFibContext.mapCandidates?.length || 0}</span></div>
+                      <div>Source: <span className="text-purple-200">{smartFibContext.selectedCandidateSource || 'N/A'}</span></div>
+                      <div>Reason: <span className="text-purple-200">{smartFibContext.swingSelectionReason || 'N/A'}</span></div>
+                      <div>Quality: <span className="text-purple-200">{smartFibContext.rangeQuality}</span></div>
+                      <div>Zone: <span className="text-purple-200">{smartFibContext.currentZoneState || 'N/A'}</span></div>
+                    </div>
+                    {smartFibContext.invalidationReason && (
+                      <p className="mt-1 text-[10px] text-red-400">Blocked: {smartFibContext.invalidationReason}</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-indigo-700/40 bg-black/50 p-2 text-xs">
+                    <div className="mb-1 flex items-center justify-between"><p className="font-bold text-indigo-300">Discord MTF Status</p></div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-300 mb-2">
+                      <div>Enabled: <span className="text-indigo-200">{discordEnabled ? 'YES' : 'NO'}</span></div>
+                      <div>Send Exec: <span className="text-indigo-200">{discordSendExecutableSignals ? 'YES' : 'NO'}</span></div>
+                      <div>Send Watch: <span className="text-indigo-200">{discordSendWatchSignals ? 'YES' : 'NO'}</span></div>
+                      <div>Send Filtered: <span className="text-indigo-200">{discordSendFilteredSignals ? 'YES' : 'NO'}</span></div>
+                      <div>Cooldown: <span className="text-indigo-200">{discordCooldownMs}ms</span></div>
+                      <div>Webhook: <span className="text-indigo-200">{discordWebhookUrl ? 'SET' : 'NONE'}</span></div>
+                    </div>
+                    <div className="mb-2">
+                      <p className="text-[10px] text-zinc-400 mb-1">Timeframes:</p>
+                      <div className="flex flex-wrap gap-1">
+                        {["5m", "15m", "1H", "4H", "1D"].map((tf) => (
+                          <button
+                            key={tf}
+                            onClick={() => setDiscordSignalTimeframes((prev) =>
+                              prev.includes(tf) ? prev.filter(t => t !== tf) : [...prev, tf]
+                            )}
+                            className={`px-1.5 py-0.5 rounded text-[9px] border transition ${
+                              discordSignalTimeframes.includes(tf)
+                                ? "bg-indigo-500/20 border-indigo-500 text-indigo-200"
+                                : "bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-indigo-500"
+                            }`}
+                          >
+                            {tf}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-zinc-400">Last sent: {discordSentState ? 'Recent' : 'None'}</p>
+                  </div>
+                </>
+              )}
               <div className="max-h-[360px] space-y-2 overflow-auto pr-1 [scrollbar-width:thin] [scrollbar-color:#3f3f46_transparent]">
                 {signalFeedRows.length === 0 && <p className="text-xs text-[#8b9098]">No subscribed signal rows yet.</p>}
                 {signalFeedRows.map((row, index) => (
@@ -5474,6 +5620,49 @@ function orderRoi(order: TradeOrder) {
                     {fullscreen ? "Exit" : "Full"}
                   </button>
                 </div>
+
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setShowSmartFibChartDebug((prev) => !prev)}
+                    className={`h-7 px-2.5 rounded-lg text-[10px] border transition ${
+                      showSmartFibChartDebug
+                        ? "bg-yellow-500/15 border-yellow-500 text-yellow-200 hover:bg-yellow-500/25"
+                        : "bg-[#08080a] border-[#27272f] text-gray-400 hover:text-white hover:border-yellow-700"
+                    }`}
+                  >
+                    Debug {showSmartFibChartDebug ? "ON" : "OFF"}
+                  </button>
+                  <button
+                    onClick={() => setShowSmartFibAnchorMarkers((prev) => !prev)}
+                    className={`h-7 px-2.5 rounded-lg text-[10px] border transition ${
+                      showSmartFibAnchorMarkers
+                        ? "bg-blue-500/15 border-blue-500 text-blue-200 hover:bg-blue-500/25"
+                        : "bg-[#08080a] border-[#27272f] text-gray-400 hover:text-white hover:border-yellow-700"
+                    }`}
+                  >
+                    Anchors {showSmartFibAnchorMarkers ? "ON" : "OFF"}
+                  </button>
+                  <button
+                    onClick={() => setShowSmartFibChartPanel((prev) => !prev)}
+                    className={`h-7 px-2.5 rounded-lg text-[10px] border transition ${
+                      showSmartFibChartPanel
+                        ? "bg-purple-500/15 border-purple-500 text-purple-200 hover:bg-purple-500/25"
+                        : "bg-[#08080a] border-[#27272f] text-gray-400 hover:text-white hover:border-yellow-700"
+                    }`}
+                  >
+                    Fib Panel {showSmartFibChartPanel ? "ON" : "OFF"}
+                  </button>
+                  <button
+                    onClick={() => setEnableBackfill((prev) => !prev)}
+                    className={`h-7 px-2.5 rounded-lg text-[10px] border transition ${
+                      enableBackfill
+                        ? "bg-green-500/15 border-green-500 text-green-200 hover:bg-green-500/25"
+                        : "bg-[#08080a] border-[#27272f] text-gray-400 hover:text-white hover:border-yellow-700"
+                    }`}
+                  >
+                    Backfill {enableBackfill ? "ON" : "OFF"}
+                  </button>
+                </div>
               </div>
 
               <div
@@ -5495,8 +5684,9 @@ function orderRoi(order: TradeOrder) {
               >
                 <div ref={chartRef} className="h-[560px] w-full min-w-0 xl:h-[590px]" />
 
-                <SmartFibOverlay context={smartFibContext} chartApi={chartApiRef.current} candleSeries={candleSeriesRef.current} />
+                <SmartFibOverlay context={smartFibContext} chartApi={chartApiRef.current} candleSeries={candleSeriesRef.current} showAnchorMarkers={showSmartFibAnchorMarkers} showPanel={showSmartFibChartPanel} />
 
+                {showSmartFibChartDebug && (
                 <div className="absolute left-4 bottom-4 z-40 w-[280px] rounded-2xl border border-green-500/20 bg-black/70 p-3 text-[11px] text-gray-200 shadow-[0_0_24px_rgba(0,0,0,0.55)]">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-black text-xs text-green-300">Smart Fib Status</span>
@@ -5534,7 +5724,9 @@ function orderRoi(order: TradeOrder) {
                       : "Smart Fib is disabled. Enable the feature to display swing maps, zones, and candidate entries."}
                   </p>
                 </div>
+                )}
 
+                {showSmartFibChartDebug && (
                 <div className="absolute left-3 top-3 z-40 max-w-[300px] rounded-xl border border-yellow-500/20 bg-black/70 px-3 py-2 backdrop-blur-md shadow-[0_0_30px_rgba(0,0,0,0.65)] pointer-events-none">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[10px] font-black tracking-[0.18em] text-yellow-400">WOLVRENE PRECISION</p>
@@ -5546,6 +5738,7 @@ function orderRoi(order: TradeOrder) {
                   <p className="mt-1 text-[10px] text-yellow-300">State: {v25FinalBrain.activeTradeState} · Entry: {v25FinalBrain.entryQuality} · TP hits: {v25FinalBrain.tpHitCount}</p>
                   <p className="mt-1 text-[9px] text-gray-500">Unified brain · closed-candle signals · cooldown protected · stable memory</p>
                 </div>
+                )}
                 {activeExecutionTradeView && activeExecutionTradeView.timeframe !== timeframe && (
                   <div className="absolute right-3 top-3 z-40 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-300">
                     Active {activeExecutionTradeView.timeframe} {activeExecutionTradeView.side}
@@ -5744,47 +5937,55 @@ function orderRoi(order: TradeOrder) {
             </div>
 
             {!hideUI && (
-              <div className={`${terminalPanel} mt-3 p-4`}>
+              <div className={`${terminalPanel} mt-3 p-4 ${!activeExecutionTradeView ? 'pb-2' : ''}`}>
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-xs font-black uppercase tracking-[0.18em] text-[#ffc247]">Active Trade Overview</h3>
                   <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] text-[#8b9098]">{activeExecutionTradeView?.status || "WAITING"}</span>
                 </div>
-                <div className="grid gap-2 text-xs md:grid-cols-5">
-                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Position</p><p className={activeExecutionTradeView?.side === "LONG" ? "font-bold text-green-400" : "font-bold text-red-400"}>{activeExecutionTradeView?.side || "NONE"}</p></div>
-                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Size</p><p className="font-bold">{activeExecutionTradeView?.size?.toFixed(4) || "--"}</p></div>
-                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Entry / Mark</p><p className="font-bold">{activeExecutionTradeView ? formatPrice(activeExecutionTradeView.entry) : "--"} / {livePrice ? formatPrice(livePrice) : "--"}</p></div>
-                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">PnL / ROE</p><p className="font-bold">{activeExecutionTradeView && livePrice ? `${(((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2))} / ${((((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size) / Math.max(activeExecutionTradeView.margin, 0.0001) * 100).toFixed(2))}%` : "--"}</p></div>
-                  <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Margin / SL</p><p className="font-bold">{activeExecutionTradeView ? `${activeExecutionTradeView.margin.toFixed(2)} / ${formatPrice(activeExecutionTradeView.sl)}` : "--"}</p></div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  {["Signal Received", "Validated", "Executed", "Managed"].map((step) => (
-                    <span key={step} className="rounded-lg border border-zinc-800 bg-black/40 px-2 py-1 text-[10px] text-[#8b9098]">{step}</span>
-                  ))}
-                  <div className="ml-auto grid grid-cols-2 gap-2 text-[11px]">
-                    <button
-                      onClick={() => createOrder("LONG")}
-                      disabled={!canExecuteLong}
-                      className={`rounded-lg px-3 py-1.5 font-bold ${
-                        canExecuteLong
-                          ? "border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-500/15"
-                          : "border border-zinc-800 bg-zinc-900 text-zinc-500 cursor-not-allowed opacity-60"
-                      }`}
-                    >
-                      Open Long
-                    </button>
-                    <button
-                      onClick={() => createOrder("SHORT")}
-                      disabled={!canExecuteShort}
-                      className={`rounded-lg px-3 py-1.5 font-bold ${
-                        canExecuteShort
-                          ? "border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/15"
-                          : "border border-zinc-800 bg-zinc-900 text-zinc-500 cursor-not-allowed opacity-60"
-                      }`}
-                    >
-                      Open Short
-                    </button>
+                {activeExecutionTradeView ? (
+                  <>
+                    <div className="grid gap-2 text-xs md:grid-cols-5">
+                      <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Position</p><p className={activeExecutionTradeView?.side === "LONG" ? "font-bold text-green-400" : "font-bold text-red-400"}>{activeExecutionTradeView?.side || "NONE"}</p></div>
+                      <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Size</p><p className="font-bold">{activeExecutionTradeView?.size?.toFixed(4) || "--"}</p></div>
+                      <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Entry / Mark</p><p className="font-bold">{activeExecutionTradeView ? formatPrice(activeExecutionTradeView.entry) : "--"} / {livePrice ? formatPrice(livePrice) : "--"}</p></div>
+                      <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">PnL / ROE</p><p className="font-bold">{activeExecutionTradeView && livePrice ? `${(((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size).toFixed(2))} / ${((((activeExecutionTradeView.side === "LONG" ? livePrice - activeExecutionTradeView.entry : activeExecutionTradeView.entry - livePrice) * activeExecutionTradeView.size) / Math.max(activeExecutionTradeView.margin, 0.0001) * 100).toFixed(2))}%` : "--"}</p></div>
+                      <div className="rounded-xl border border-zinc-800 bg-black/50 p-2"><p className="text-[#8b9098]">Margin / SL</p><p className="font-bold">{activeExecutionTradeView ? `${activeExecutionTradeView.margin.toFixed(2)} / ${formatPrice(activeExecutionTradeView.sl)}` : "--"}</p></div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {["Signal Received", "Validated", "Executed", "Managed"].map((step) => (
+                        <span key={step} className="rounded-lg border border-zinc-800 bg-black/40 px-2 py-1 text-[10px] text-[#8b9098]">{step}</span>
+                      ))}
+                      <div className="ml-auto grid grid-cols-2 gap-2 text-[11px]">
+                        <button
+                          onClick={() => createOrder("LONG")}
+                          disabled={!canExecuteLong}
+                          className={`rounded-lg px-3 py-1.5 font-bold ${
+                            canExecuteLong
+                              ? "border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-500/15"
+                              : "border border-zinc-800 bg-zinc-900 text-zinc-500 cursor-not-allowed opacity-60"
+                          }`}
+                        >
+                          Open Long
+                        </button>
+                        <button
+                          onClick={() => createOrder("SHORT")}
+                          disabled={!canExecuteShort}
+                          className={`rounded-lg px-3 py-1.5 font-bold ${
+                            canExecuteShort
+                              ? "border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/15"
+                              : "border border-zinc-800 bg-zinc-900 text-zinc-500 cursor-not-allowed opacity-60"
+                          }`}
+                        >
+                          Open Short
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-2">
+                    <p className="text-[11px] text-[#8b9098]">No active trade. Engine is waiting for VALIDATE → EXECUTE conditions.</p>
                   </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -5933,50 +6134,42 @@ function orderRoi(order: TradeOrder) {
               </div>
             )}
 
-            {smartFibEnabled && (
-              <div className={`${terminalPanel} mt-3 p-4`}>
-                <SmartFibDashboard context={smartFibContext} />
-              </div>
-            )}
+
 
             {!hideUI && (
-              <div className="mt-4 grid gap-3 lg:grid-cols-4">
-                <div className={`${terminalPanel} p-4`}>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Performance Today</p>
-                  <p className="mt-2 text-xl font-black text-[#00e676]">
+              <div className="mt-4 grid gap-2 lg:grid-cols-4">
+                <div className={`${terminalPanel} p-3`}>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Performance Today</p>
+                  <p className="mt-1 text-lg font-black text-[#00e676]">
                     {tradeLog.length ? `${tradeLog.filter((t) => t.result === "WIN").length}/${tradeLog.length}` : "0/0"}
                   </p>
-                  <div className="mt-3 h-12 rounded-lg bg-gradient-to-r from-[#ff8a00]/20 via-[#ffc247]/20 to-[#00e676]/10" />
+                  <div className="mt-2 h-8 rounded-lg bg-gradient-to-r from-[#ff8a00]/20 via-[#ffc247]/20 to-[#00e676]/10" />
                 </div>
-                <div className={`${terminalPanel} p-4`}>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">AI Engine Status</p>
-                  <div className="mt-2 flex items-center gap-3">
-                    <img src="/wolvrene-logo.png" alt="Wolvrene AI" className="h-10 w-10 object-contain opacity-90" />
-                    <div className="text-[11px] text-[#8b9098]">
-                      <p>Market Scan: Active</p>
-                      <p>Liquidity Analysis: Active</p>
-                      <p>Structure Mapping: Active</p>
-                      <p>Volume Analysis: Active</p>
-                      <p>Execution Engine: Active</p>
+                <div className={`${terminalPanel} p-3`}>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">AI Engine Status</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <img src="/wolvrene-logo.png" alt="Wolvrene AI" className="h-8 w-8 object-contain opacity-90" />
+                    <div className="text-[10px] text-[#8b9098]">
+                      <p>Scan/Liq/Struct/Vol/Exec: Active</p>
                     </div>
                   </div>
                 </div>
-                <div className={`${terminalPanel} p-4`}>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Risk Management</p>
-                  <div className="mt-3 flex items-center gap-3">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-full border-4 border-[#ff8a00]/60 text-sm font-black text-[#ffc247]">
+                <div className={`${terminalPanel} p-3`}>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Risk Management</p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border-4 border-[#ff8a00]/60 text-xs font-black text-[#ffc247]">
                       {Math.min(99, Math.max(1, Math.round((orders.length * 11) + 22)))}%
                     </div>
-                    <p className="text-xs text-[#8b9098]">Dynamic exposure based on active orders and AI confidence.</p>
+                    <p className="text-[10px] text-[#8b9098]">Dynamic exposure</p>
                   </div>
                 </div>
-                <div className={`${terminalPanel} p-4`}>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8b9098]">Trade Timeline</p>
-                  <div className="mt-2 space-y-1 text-[11px] text-[#8b9098]">
-                    {signalFeedRows.slice(0, 4).map((row, index) => (
+                <div className={`${terminalPanel} p-3`}>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9098]">Trade Timeline</p>
+                  <div className="mt-1 space-y-1 text-[9px] text-[#8b9098]">
+                    {signalFeedRows.slice(0, 3).map((row, index) => (
                       <p key={`timeline-${row.id}-${index}`}>{row.time} · {row.status}</p>
                     ))}
-                    {signalFeedRows.length === 0 && <p>No recent timeline events.</p>}
+                    {signalFeedRows.length === 0 && <p>No recent events.</p>}
                   </div>
                 </div>
               </div>
@@ -6243,8 +6436,8 @@ function orderRoi(order: TradeOrder) {
 
                 <button
                   onClick={() => {
-                    storageSet<WolvreneUserPrefs>(userPrefsKey(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled });
-                    addJournal("User settings saved: symbol, timeframe, order panel, and layout.");
+                    storageSet<WolvreneUserPrefs>(userPrefsKey(), { selectedSymbol, timeframe, marginMode, orderType, orderSide, draftPrice, draftUsd, draftLeverage, terminalTab, hideUI, smartFibEnabled, showSmartFibChartDebug, showSmartFibChartPanel, showSmartFibAnchorMarkers, enableBackfill, discordEnabled, discordWebhookUrl, discordSignalTimeframes, discordSendExecutableSignals, discordSendWatchSignals, discordSendFilteredSignals, discordCooldownMs, enableCandleBackfill, preferredCandleHistoryLimit, maxBackfillBatches });
+                    addJournal("User settings saved: symbol, timeframe, order panel, layout, Smart Fib, Discord, and backfill settings.");
                   }}
                   className="w-full h-9 rounded-xl bg-zinc-900 border border-yellow-700/40 text-yellow-300 text-xs font-black mb-3 hover:bg-zinc-800"
                 >

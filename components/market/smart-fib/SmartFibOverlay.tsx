@@ -11,6 +11,8 @@ interface SmartFibOverlayProps {
   context: SmartFibContext;
   chartApi: IChartApi | null;
   candleSeries: ISeriesApi<"Candlestick"> | null;
+  showAnchorMarkers?: boolean;
+  showPanel?: boolean;
 }
 
 type DrawableFibLevel = SmartFibLevel & {
@@ -37,6 +39,8 @@ export default function SmartFibOverlay({
   context,
   chartApi,
   candleSeries,
+  showAnchorMarkers = false,
+  showPanel = true,
 }: SmartFibOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -110,92 +114,94 @@ export default function SmartFibOverlay({
     }
 
     // Draw vertical lines for swing high/low candles
-    for (const marker of candleMarkers) {
-      if (marker.x === undefined) continue;
+    if (showAnchorMarkers) {
+      for (const marker of candleMarkers) {
+        if (marker.x === undefined) continue;
 
-      const yPrice = candleSeries.priceToCoordinate(marker.price);
-      if (yPrice === null || typeof yPrice !== "number") continue;
+        const yPrice = candleSeries.priceToCoordinate(marker.price);
+        if (yPrice === null || typeof yPrice !== "number") continue;
 
-      // Vertical line
-      const color = marker.type === "HIGH" ? "rgba(239, 68, 68, 0.7)" : "rgba(34, 197, 94, 0.7)";
-      const lineWidth = 3;
+        // Vertical line
+        const color = marker.type === "HIGH" ? "rgba(239, 68, 68, 0.7)" : "rgba(34, 197, 94, 0.7)";
+        const lineWidth = 3;
 
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lineWidth;
-      ctx.setLineDash([5, 5]);
-      ctx.beginPath();
-      ctx.moveTo(marker.x, 0);
-      ctx.lineTo(marker.x, rect.height);
-      ctx.stroke();
-      ctx.setLineDash([]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(marker.x, 0);
+        ctx.lineTo(marker.x, rect.height);
+        ctx.stroke();
+        ctx.setLineDash([]);
 
-      // Top label area
-      const labelText = marker.type === "HIGH" ? "SF High" : "SF Low";
-      const priceText = marker.price.toFixed(2);
-      const indexText = `#${marker.index}`;
+        // Top label area
+        const labelText = marker.type === "HIGH" ? "SF High" : "SF Low";
+        const priceText = marker.price.toFixed(2);
+        const indexText = `#${marker.index}`;
 
-      ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 0.9)" : "rgba(34, 197, 94, 0.9)";
-      ctx.font = "bold 11px monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
+        ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 0.9)" : "rgba(34, 197, 94, 0.9)";
+        ctx.font = "bold 11px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
 
-      // Draw label box at top
-      const labelBoxPadding = 4;
-      const labelHeight = 22;
-      const labelY = 12;
+        // Draw label box at top
+        const labelBoxPadding = 4;
+        const labelHeight = 22;
+        const labelY = 12;
 
-      // Background
-      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
-      ctx.fillRect(
-        marker.x - 45,
-        labelY - labelHeight / 2,
-        90,
-        labelHeight
-      );
+        // Background
+        ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+        ctx.fillRect(
+          marker.x - 45,
+          labelY - labelHeight / 2,
+          90,
+          labelHeight
+        );
 
-      // Border
-      ctx.strokeStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(
-        marker.x - 45,
-        labelY - labelHeight / 2,
-        90,
-        labelHeight
-      );
+        // Border
+        ctx.strokeStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(
+          marker.x - 45,
+          labelY - labelHeight / 2,
+          90,
+          labelHeight
+        );
 
-      // Text
-      ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
-      ctx.font = "bold 10px monospace";
-      ctx.fillText(labelText, marker.x, labelY - 5);
-      ctx.font = "9px monospace";
-      ctx.fillText(priceText, marker.x, labelY + 5);
+        // Text
+        ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
+        ctx.font = "bold 10px monospace";
+        ctx.fillText(labelText, marker.x, labelY - 5);
+        ctx.font = "9px monospace";
+        ctx.fillText(priceText, marker.x, labelY + 5);
 
-      // Bottom label with index
-      const indexBoxHeight = 18;
-      const indexY = rect.height - 10;
+        // Bottom label with index
+        const indexBoxHeight = 18;
+        const indexY = rect.height - 10;
 
-      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
-      ctx.fillRect(
-        marker.x - 35,
-        indexY - indexBoxHeight / 2,
-        70,
-        indexBoxHeight
-      );
+        ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+        ctx.fillRect(
+          marker.x - 35,
+          indexY - indexBoxHeight / 2,
+          70,
+          indexBoxHeight
+        );
 
-      ctx.strokeStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(
-        marker.x - 35,
-        indexY - indexBoxHeight / 2,
-        70,
-        indexBoxHeight
-      );
+        ctx.strokeStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(
+          marker.x - 35,
+          indexY - indexBoxHeight / 2,
+          70,
+          indexBoxHeight
+        );
 
-      ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
-      ctx.font = "bold 9px monospace";
-      ctx.fillText(indexText, marker.x, indexY);
+        ctx.fillStyle = marker.type === "HIGH" ? "rgba(239, 68, 68, 1)" : "rgba(34, 197, 94, 1)";
+        ctx.font = "bold 9px monospace";
+        ctx.fillText(indexText, marker.x, indexY);
+      }
     }
-  }, [context, chartApi, candleSeries, shouldDraw]);
+  }, [context, chartApi, candleSeries, shouldDraw, showAnchorMarkers]);
 
   if (!shouldDraw || !candleSeries) {
     return null;
@@ -260,16 +266,17 @@ export default function SmartFibOverlay({
         style={{ display: "block" }}
       />
 
-      <div className="absolute left-3 top-3 rounded border border-orange-400/50 bg-black/90 px-3 py-2 text-[10px] font-bold text-orange-300 max-w-sm">
-        {/* Header */}
-        <div>
-          Smart Fib {context.mapState} · Map: {mapType} · {drawableLevels.length} levels
-          {context.swingQualityScore !== undefined && (
-            <span className="ml-2 text-amber-300">Quality: {context.swingQualityScore.toFixed(0)}</span>
-          )}
-        </div>
+      {showPanel && (
+        <div className="absolute left-3 top-3 rounded border border-orange-400/50 bg-black/90 px-3 py-2 text-[10px] font-bold text-orange-300 max-w-sm">
+          {/* Header */}
+          <div>
+            Smart Fib {context.mapState} · Map: {mapType} · {drawableLevels.length} levels
+            {context.swingQualityScore !== undefined && (
+              <span className="ml-2 text-amber-300">Quality: {context.swingQualityScore.toFixed(0)}</span>
+            )}
+          </div>
 
-        {/* Swing Anchors & Range */}
+          {/* Swing Anchors & Range */}
         {context.swingHighIndex !== undefined && context.swingLowIndex !== undefined && (
           <div className="mt-2 space-y-1 border-t border-orange-400/30 pt-2 text-[9px] text-gray-200">
             <div className="flex justify-between">
@@ -359,7 +366,7 @@ export default function SmartFibOverlay({
             </span>
           </div>
         )}
-      </div>
+      </div>)}
 
       {/* Swing Anchors */}
       {drawableAnchors.map((anchor) => (
