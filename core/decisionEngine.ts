@@ -177,6 +177,8 @@ export type DecisionEngineInput = {
   smartFibSniperLevelName?: "SNIPER_GOLD_882" | "SNIPER_EXTREME_941" | null;
   smartFibSniperLevelPrice?: number | null;
   smartFibSniperDistanceAtr?: number | null;
+  smartFibSniperTouched?: boolean;
+  smartFibSniperRejected?: boolean;
   smartFibSniperDirection?: "LONG" | "SHORT" | null;
   smartFibSniperReason?: string;
 };

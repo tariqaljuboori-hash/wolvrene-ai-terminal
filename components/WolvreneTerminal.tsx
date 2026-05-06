@@ -1065,8 +1065,8 @@ export default function WolvreneTerminal() {
 
   // Smart Fib state
   const [smartFibSettings, setSmartFibSettings] = useState(() => {
-    const saved = storageGet<typeof SMART_FIB_DEFAULTS>(smartFibSettingsKey(), null);
-    return saved ? { ...saved } : { ...SMART_FIB_DEFAULTS };
+    const saved = storageGet<typeof SMART_FIB_DEFAULTS>(smartFibSettingsKey(), SMART_FIB_DEFAULTS);
+    return { ...saved };
   });
   const smartFibEngine = useMemo(() => {
     const engine = new SmartFibEngine();
@@ -1682,6 +1682,14 @@ const impulseBoost =
         smartFibClosestLevelName: smartFibContext.closestImportantLevel?.name,
         smartFibClosestLevelZoneType: smartFibContext.closestImportantLevel?.zoneType,
         smartFibInvalidationPrice: smartFibContext.swingLow ? smartFibContext.swingLow - (smartFibContext.atr || 0.1) : undefined,
+        smartFibSniperState: smartFibContext.smartFibSniperState,
+        smartFibSniperLevelName: smartFibContext.smartFibSniperLevelName,
+        smartFibSniperLevelPrice: smartFibContext.smartFibSniperLevelPrice,
+        smartFibSniperDistanceAtr: smartFibContext.smartFibSniperDistanceAtr,
+        smartFibSniperTouched: smartFibContext.smartFibSniperTouched,
+        smartFibSniperRejected: smartFibContext.smartFibSniperRejected,
+        smartFibSniperDirection: smartFibContext.smartFibSniperDirection,
+        smartFibSniperReason: smartFibContext.smartFibSniperReason,
       }),
     [
       livePrice,
@@ -3252,12 +3260,6 @@ useEffect(() => {
     if (decisionPlan.phase === "FILTERED" && !externalAlertSettings.discordSignalOnly) {
       addJournal("Discord signal skipped: filtered signals not enabled");
       return;
-    }
-    const compact = buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL");
-    sendExternalAlert("WOLVRENE DECISION SIGNAL", `${decisionPlan.phase} ${decisionPlan.direction} at ${decisionPlan.entry ? formatPrice(decisionPlan.entry) : "market"}`, compact);
-    addJournal(`Discord decision sent: ${decisionPlan.phase} ${decisionPlan.quality}% on ${timeframe}`);
-  }
-      }
     }
     const compact = buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL");
     sendExternalAlert("WOLVRENE DECISION SIGNAL", `${decisionPlan.phase} ${decisionPlan.direction} at ${decisionPlan.entry ? formatPrice(decisionPlan.entry) : "market"}`, compact);
