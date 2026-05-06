@@ -1003,8 +1003,9 @@ export class SmartFibEngine {
 
     const pixelSpacingEstimate = minSpacing / Math.max(context.atr * 0.01, 0.000001);
 
+    const rangeAtrRatio = context.activeRange / context.atr;
     context.rangeQuality =
-      pixelSpacingEstimate < this.settings.minVisualLevelSpacingPx ? "COMPRESSED" : "GOOD";
+      (pixelSpacingEstimate < this.settings.minVisualLevelSpacingPx && rangeAtrRatio < 2.0) ? "COMPRESSED" : "GOOD";
   }
 
   private checkInvalidation(context: SmartFibContext, candle: Candle): void {
