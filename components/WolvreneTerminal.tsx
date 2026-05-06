@@ -5723,6 +5723,26 @@ function orderRoi(order: TradeOrder) {
                       <div className="font-bold text-white">{smartFibContext.lastSignals.length}</div>
                     </div>
                   </div>
+                  <div className="mt-2 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Sniper</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperState || "NONE"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Level</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperLevelName || "--"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Distance ATR</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperDistanceAtr ? smartFibContext.smartFibSniperDistanceAtr.toFixed(2) : "--"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Touched</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperTouched ? "YES" : "NO"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Rejected</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperRejected ? "YES" : "NO"}</div>
+                  </div>
                   <div className="mt-2 text-[10px]">
                     <div className="text-gray-500">Alignment</div>
                     <div className={`font-bold ${alignmentStatus === "EXECUTABLE_ALIGNMENT" ? "text-green-400" : alignmentStatus === "CONFLICT" ? "text-red-400" : "text-yellow-400"}`}>
