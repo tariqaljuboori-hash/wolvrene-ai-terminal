@@ -1,8 +1,8 @@
 export const SMART_FIB_DEFAULTS = {
   // Pivot Detection
-  pivotLeft: 5,
-  pivotRight: 5,
-  minSwingRangeAtr: 0.5,
+  pivotLeft: 25,
+  pivotRight: 6,
+  minSwingRangeAtr: 0.4,
   minSwingRangePercent: 0.001,
   maxMapAgeBars: 200,
   protectDominantMap: false,

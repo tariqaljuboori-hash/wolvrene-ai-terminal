@@ -958,6 +958,8 @@ type WolvreneUserPrefs = {
 
 function userPrefsKey() { return "wolvrene_user_prefs_v37"; }
 
+function smartFibSettingsKey() { return "wolvrene_smart_fib_settings_v1"; }
+
 const defaultUserPrefs: WolvreneUserPrefs = {
   selectedSymbol: TRADE_SYMBOLS[0].symbol,
   timeframe: "15m",
@@ -1062,7 +1064,10 @@ export default function WolvreneTerminal() {
   const [recentCandles, setRecentCandles] = useState<Candle[]>([]);
 
   // Smart Fib state
-  const [smartFibSettings, setSmartFibSettings] = useState(() => ({ ...SMART_FIB_DEFAULTS }));
+  const [smartFibSettings, setSmartFibSettings] = useState(() => {
+    const saved = storageGet<typeof SMART_FIB_DEFAULTS>(smartFibSettingsKey(), null);
+    return saved ? { ...saved } : { ...SMART_FIB_DEFAULTS };
+  });
   const smartFibEngine = useMemo(() => {
     const engine = new SmartFibEngine();
     engine.updateSettings(smartFibSettings);
@@ -1265,6 +1270,11 @@ useEffect(() => {
   const modeBucket: TradeMode = tradeModeSelection === "SWING" ? "SWING" : "SCALP";
   storageSet(tradeMarkersKey(selectedSymbol, timeframe, modeBucket), tradeMarkers);
 }, [tradeMarkers, selectedSymbol, timeframe, tradeModeSelection, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  storageSet(smartFibSettingsKey(), smartFibSettings);
+}, [smartFibSettings, hydrated]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -3222,7 +3232,7 @@ useEffect(() => {
   }
 
   function sendDiscordSignalNow() {
-    if (!discordEnabled || !discordWebhookUrl) {
+    if (!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook) {
       addJournal("Discord disabled or no webhook set");
       return;
     }
@@ -3230,24 +3240,23 @@ useEffect(() => {
       addJournal(`Discord signal skipped: timeframe ${timeframe} not selected`);
       return;
     }
-    if (v25FinalBrain.action !== "ENTER NOW" || !v25FinalBrain.finalDirection || !v25FinalBrain.entry) {
+    if (!decisionPlan.direction || !decisionPlan.entry) {
       addJournal("Discord signal skipped: no valid decision plan");
       return;
     }
-    if (decisionPlan.quality < 86 || v23EliteEngine.sniperScore < 86) {
-      addJournal(`Discord signal skipped: quality ${decisionPlan.quality}% / sniper ${v23EliteEngine.sniperScore}% below threshold`);
+    if (decisionPlan.quality < externalAlertSettings.minSignalConfidence) {
+      addJournal(`Discord signal skipped: quality ${decisionPlan.quality}% below threshold ${externalAlertSettings.minSignalConfidence}%`);
       return;
     }
-    // Don't send fake signals for filtered decisions
-    if (decisionPlan.phase === "FILTERED") {
-      if (!discordSendFilteredSignals) {
-        addJournal("Discord signal skipped: filtered signals disabled");
-        return;
-      }
-    } else if (decisionPlan.phase === "EXECUTE") {
-      if (!discordSendExecutableSignals) {
-        addJournal("Discord signal skipped: executable signals disabled");
-        return;
+    // Respect signal type filters
+    if (decisionPlan.phase === "FILTERED" && !externalAlertSettings.discordSignalOnly) {
+      addJournal("Discord signal skipped: filtered signals not enabled");
+      return;
+    }
+    const compact = buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL");
+    sendExternalAlert("WOLVRENE DECISION SIGNAL", `${decisionPlan.phase} ${decisionPlan.direction} at ${decisionPlan.entry ? formatPrice(decisionPlan.entry) : "market"}`, compact);
+    addJournal(`Discord decision sent: ${decisionPlan.phase} ${decisionPlan.quality}% on ${timeframe}`);
+  }
       }
     }
     const compact = buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL");

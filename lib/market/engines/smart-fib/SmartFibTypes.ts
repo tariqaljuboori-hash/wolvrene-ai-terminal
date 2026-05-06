@@ -163,6 +163,16 @@ export interface SmartFibContext {
   currentZoneState?: SmartFibZoneState;
   closestImportantLevel?: SmartFibLevel & { distance: number; distanceAtr: number };
 
+  // Sniper state detection (0.882 / 0.941 sniper zones)
+  smartFibSniperState?: "NONE" | "SNIPER_WATCH" | "SNIPER_ARMED" | "SNIPER_REACTION" | "SNIPER_FAILED";
+  smartFibSniperLevelName?: "SNIPER_GOLD_882" | "SNIPER_EXTREME_941" | null;
+  smartFibSniperLevelPrice?: number | null;
+  smartFibSniperDistanceAtr?: number | null;
+  smartFibSniperTouched?: boolean;
+  smartFibSniperRejected?: boolean;
+  smartFibSniperDirection?: "LONG" | "SHORT" | null;
+  smartFibSniperReason?: string;
+
   activeBoxes: SmartFibBox[];
 
   currentSignal?: SmartFibSignal;
