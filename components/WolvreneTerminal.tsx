@@ -5725,15 +5725,15 @@ function orderRoi(order: TradeOrder) {
                   </div>
                   <div className="mt-2 text-[10px] text-gray-400">
                     <div className="text-gray-500">Sniper</div>
-                    <div className="font-bold text-white">{smartFibContext.smartFibSniperState || "NONE"}</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperState ?? "NONE"}</div>
                   </div>
                   <div className="mt-1 text-[10px] text-gray-400">
                     <div className="text-gray-500">Level</div>
-                    <div className="font-bold text-white">{smartFibContext.smartFibSniperLevelName || "--"}</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperLevelName ?? "--"}</div>
                   </div>
                   <div className="mt-1 text-[10px] text-gray-400">
                     <div className="text-gray-500">Distance ATR</div>
-                    <div className="font-bold text-white">{smartFibContext.smartFibSniperDistanceAtr ? smartFibContext.smartFibSniperDistanceAtr.toFixed(2) : "--"}</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperDistanceAtr ?? "--"}</div>
                   </div>
                   <div className="mt-1 text-[10px] text-gray-400">
                     <div className="text-gray-500">Touched</div>
