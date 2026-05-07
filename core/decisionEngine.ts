@@ -171,6 +171,16 @@ export type DecisionEngineInput = {
   smartFibClosestLevelName?: string;
   smartFibClosestLevelZoneType?: "SNIPER" | "SILVER" | "SUPPORT" | "NONE";
   smartFibInvalidationPrice?: number;
+
+  // Sniper state detection (0.882 / 0.941 sniper zones)
+  smartFibSniperState?: "NONE" | "SNIPER_WATCH" | "SNIPER_ARMED" | "SNIPER_REACTION" | "SNIPER_FAILED";
+  smartFibSniperLevelName?: "SNIPER_GOLD_882" | "SNIPER_EXTREME_941" | null;
+  smartFibSniperLevelPrice?: number | null;
+  smartFibSniperDistanceAtr?: number | null;
+  smartFibSniperTouched?: boolean;
+  smartFibSniperRejected?: boolean;
+  smartFibSniperDirection?: "LONG" | "SHORT" | null;
+  smartFibSniperReason?: string;
 };
 
 type SmartFibEvaluation = {
@@ -287,7 +297,27 @@ function evaluateSmartFibZone(
 
   result.zoneState = incomingZone as SmartFibZoneState;
 
-  if (incomingZone === "SNIPER_ACTIVE") {
+  // Check sniper state for additional boost
+  const sniperState = input.smartFibSniperState || "NONE";
+  
+  if (sniperState === "SNIPER_REACTION") {
+    // Sniper reaction is a strong signal - highest boost
+    result.qualityBoost = 32;
+    result.executableZone = true;
+  } else if (sniperState === "SNIPER_ARMED") {
+    // Sniper armed - moderate boost, waiting for reaction
+    result.qualityBoost = 18;
+    result.executableZone = false;
+  } else if (sniperState === "SNIPER_WATCH") {
+    // Price approaching sniper - watch boost
+    result.qualityBoost = 10;
+    result.executableZone = false;
+  } else if (sniperState === "SNIPER_FAILED") {
+    // Sniper level broken - no entry here
+    result.qualityBoost = -15;
+    result.blockedReason = `Smart Fib sniper level invalidated: ${input.smartFibSniperReason || "level lost"}`;
+    return result;
+  } else if (incomingZone === "SNIPER_ACTIVE") {
     result.qualityBoost = 26;
     result.executableZone = true;
   } else if (incomingZone === "SNIPER_WATCH") {

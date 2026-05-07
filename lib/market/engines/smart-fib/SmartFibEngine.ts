@@ -248,6 +248,7 @@ export class SmartFibEngine {
     // Update closest level and zone state with current price
     this.updateClosestLevelWithPrice(context, candle.close);
     this.updateZoneStateWithPrice(context, candle.close);
+    this.updateSniperState(context, candle);
 
     const touchSignals = this.checkLevelTouches(context, candle);
     signals.push(...touchSignals);
@@ -361,6 +362,119 @@ export class SmartFibEngine {
       context.currentZoneState = "NONE";
     } else {
       context.currentZoneState = "NONE";
+    }
+  }
+
+  private updateSniperState(context: SmartFibContext, candle: Candle): void {
+    if (
+      !context.activeFibLevels.length ||
+      !context.atr ||
+      context.mapState === "DISABLED" ||
+      context.mapState === "INVALIDATED" ||
+      (context.mapState !== "LONG_MAP" && context.mapState !== "SHORT_MAP" && context.mapState !== "FALLBACK_ACTIVE")
+    ) {
+      context.smartFibSniperState = "NONE";
+      return;
+    }
+
+    const atr = context.atr;
+    const watchTolerance = Math.max(atr * 0.25, Math.max(candle.close * 0.0008, 0.0001));
+    const touchTolerance = Math.max(atr * 0.08, Math.max(candle.close * 0.0003, 0.00001));
+    
+    // Get sniper levels (0.882 and 0.941)
+    const sniperLevels = context.activeFibLevels.filter(
+      (level) => level.level === 0.882 || level.level === 0.941
+    );
+
+    if (!sniperLevels.length) {
+      context.smartFibSniperState = "NONE";
+      return;
+    }
+
+    // For LONG_MAP, 0.882/0.941 are demand zones (below price normally)
+    // For SHORT_MAP, 0.882/0.941 are supply zones (above price normally)
+    const isLongMap = context.mapState === "LONG_MAP";
+    
+    let closestSniperLevel: (typeof sniperLevels)[0] | null = null;
+    let closestDistance = Infinity;
+
+    for (const level of sniperLevels) {
+      const distance = Math.abs(candle.close - level.price);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closestSniperLevel = level;
+      }
+    }
+
+    if (!closestSniperLevel) {
+      context.smartFibSniperState = "NONE";
+      return;
+    }
+
+    const distanceAtr = closestDistance / atr;
+    const levelName = closestSniperLevel.level === 0.882 ? "SNIPER_GOLD_882" : "SNIPER_EXTREME_941";
+    
+    context.smartFibSniperLevelPrice = closestSniperLevel.price;
+    context.smartFibSniperDistanceAtr = distanceAtr;
+    context.smartFibSniperLevelName = levelName;
+
+    // State machine for sniper detection
+    if (closestDistance > watchTolerance) {
+      // Price not close enough
+      if (context.smartFibSniperState !== "SNIPER_WATCH" && context.smartFibSniperState !== "SNIPER_ARMED") {
+        context.smartFibSniperState = "NONE";
+      }
+    } else if (closestDistance > touchTolerance) {
+      // Price is in watch zone (approaching but not yet touching)
+      context.smartFibSniperState = "SNIPER_WATCH";
+      context.smartFibSniperTouched = false;
+      context.smartFibSniperRejected = false;
+      context.smartFibSniperDirection = isLongMap ? "LONG" : "SHORT";
+      context.smartFibSniperReason = `Price approaching ${levelName} zone within ${distanceAtr.toFixed(2)}x ATR`;
+    } else {
+      // Price has touched/entered sniper zone
+      context.smartFibSniperTouched = true;
+
+      // Check if this is the first touch or a reaction
+      const prevState = context.smartFibSniperState;
+      
+      if (prevState === "SNIPER_WATCH" || prevState === "NONE") {
+        // First touch - mark as ARMED
+        context.smartFibSniperState = "SNIPER_ARMED";
+        context.smartFibSniperRejected = false;
+        context.smartFibSniperDirection = isLongMap ? "LONG" : "SHORT";
+        context.smartFibSniperReason = `Smart Fib armed at ${levelName} · candle wick at ${closestSniperLevel.price.toFixed(8)}`;
+      } else if (prevState === "SNIPER_ARMED") {
+        // Check for rejection/reclaim pattern
+        const bodyCenter = (candle.open + candle.close) / 2;
+        const closeAboveLevel = isLongMap && candle.close > closestSniperLevel.price;
+        const closeBelowLevel = !isLongMap && candle.close < closestSniperLevel.price;
+        const bodyAwayFromLevel = isLongMap 
+          ? bodyCenter > closestSniperLevel.price 
+          : bodyCenter < closestSniperLevel.price;
+
+        if ((closeAboveLevel || closeBelowLevel) && bodyAwayFromLevel) {
+          // Reaction confirmed - price reclaimed/rejected away from level
+          context.smartFibSniperState = "SNIPER_REACTION";
+          context.smartFibSniperRejected = true;
+          context.smartFibSniperDirection = isLongMap ? "LONG" : "SHORT";
+          context.smartFibSniperReason = `Smart Fib SNIPER_REACTION ${context.smartFibSniperDirection} from ${levelName} · rejection confirmed`;
+        } else {
+          // Still in armed state, waiting for reaction
+          context.smartFibSniperReason = `Smart Fib awaiting reaction from ${levelName}`;
+        }
+      }
+    }
+
+    // Check for invalidation (level broken decisively without reclaim)
+    if (context.smartFibSniperState === "SNIPER_ARMED" || context.smartFibSniperState === "SNIPER_REACTION") {
+      const invalidationThreshold = touchTolerance * 1.5;
+      const invalidationDirection = isLongMap ? closestDistance > invalidationThreshold && candle.close < closestSniperLevel.price - invalidationThreshold : closestDistance > invalidationThreshold && candle.close > closestSniperLevel.price + invalidationThreshold;
+      
+      if (invalidationDirection) {
+        context.smartFibSniperState = "SNIPER_FAILED";
+        context.smartFibSniperReason = `Smart Fib sniper invalidated · level ${levelName} lost`;
+      }
     }
   }
 

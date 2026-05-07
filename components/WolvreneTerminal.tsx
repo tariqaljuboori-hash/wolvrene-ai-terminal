@@ -958,6 +958,8 @@ type WolvreneUserPrefs = {
 
 function userPrefsKey() { return "wolvrene_user_prefs_v37"; }
 
+function smartFibSettingsKey() { return "wolvrene_smart_fib_settings_v1"; }
+
 const defaultUserPrefs: WolvreneUserPrefs = {
   selectedSymbol: TRADE_SYMBOLS[0].symbol,
   timeframe: "15m",
@@ -1062,7 +1064,10 @@ export default function WolvreneTerminal() {
   const [recentCandles, setRecentCandles] = useState<Candle[]>([]);
 
   // Smart Fib state
-  const [smartFibSettings, setSmartFibSettings] = useState(() => ({ ...SMART_FIB_DEFAULTS }));
+  const [smartFibSettings, setSmartFibSettings] = useState(() => {
+    const saved = storageGet<typeof SMART_FIB_DEFAULTS>(smartFibSettingsKey(), SMART_FIB_DEFAULTS);
+    return { ...saved };
+  });
   const smartFibEngine = useMemo(() => {
     const engine = new SmartFibEngine();
     engine.updateSettings(smartFibSettings);
@@ -1265,6 +1270,11 @@ useEffect(() => {
   const modeBucket: TradeMode = tradeModeSelection === "SWING" ? "SWING" : "SCALP";
   storageSet(tradeMarkersKey(selectedSymbol, timeframe, modeBucket), tradeMarkers);
 }, [tradeMarkers, selectedSymbol, timeframe, tradeModeSelection, hydrated]);
+
+useEffect(() => {
+  if (!hydrated) return;
+  storageSet(smartFibSettingsKey(), smartFibSettings);
+}, [smartFibSettings, hydrated]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1672,6 +1682,14 @@ const impulseBoost =
         smartFibClosestLevelName: smartFibContext.closestImportantLevel?.name,
         smartFibClosestLevelZoneType: smartFibContext.closestImportantLevel?.zoneType,
         smartFibInvalidationPrice: smartFibContext.swingLow ? smartFibContext.swingLow - (smartFibContext.atr || 0.1) : undefined,
+        smartFibSniperState: smartFibContext.smartFibSniperState,
+        smartFibSniperLevelName: smartFibContext.smartFibSniperLevelName,
+        smartFibSniperLevelPrice: smartFibContext.smartFibSniperLevelPrice,
+        smartFibSniperDistanceAtr: smartFibContext.smartFibSniperDistanceAtr,
+        smartFibSniperTouched: smartFibContext.smartFibSniperTouched,
+        smartFibSniperRejected: smartFibContext.smartFibSniperRejected,
+        smartFibSniperDirection: smartFibContext.smartFibSniperDirection,
+        smartFibSniperReason: smartFibContext.smartFibSniperReason,
       }),
     [
       livePrice,
@@ -3222,7 +3240,7 @@ useEffect(() => {
   }
 
   function sendDiscordSignalNow() {
-    if (!discordEnabled || !discordWebhookUrl) {
+    if (!externalAlertSettings.enabled || !externalAlertSettings.discordWebhook) {
       addJournal("Discord disabled or no webhook set");
       return;
     }
@@ -3230,25 +3248,18 @@ useEffect(() => {
       addJournal(`Discord signal skipped: timeframe ${timeframe} not selected`);
       return;
     }
-    if (v25FinalBrain.action !== "ENTER NOW" || !v25FinalBrain.finalDirection || !v25FinalBrain.entry) {
+    if (!decisionPlan.direction || !decisionPlan.entry) {
       addJournal("Discord signal skipped: no valid decision plan");
       return;
     }
-    if (decisionPlan.quality < 86 || v23EliteEngine.sniperScore < 86) {
-      addJournal(`Discord signal skipped: quality ${decisionPlan.quality}% / sniper ${v23EliteEngine.sniperScore}% below threshold`);
+    if (decisionPlan.quality < externalAlertSettings.minSignalConfidence) {
+      addJournal(`Discord signal skipped: quality ${decisionPlan.quality}% below threshold ${externalAlertSettings.minSignalConfidence}%`);
       return;
     }
-    // Don't send fake signals for filtered decisions
-    if (decisionPlan.phase === "FILTERED") {
-      if (!discordSendFilteredSignals) {
-        addJournal("Discord signal skipped: filtered signals disabled");
-        return;
-      }
-    } else if (decisionPlan.phase === "EXECUTE") {
-      if (!discordSendExecutableSignals) {
-        addJournal("Discord signal skipped: executable signals disabled");
-        return;
-      }
+    // Respect signal type filters
+    if (decisionPlan.phase === "FILTERED" && !externalAlertSettings.discordSignalOnly) {
+      addJournal("Discord signal skipped: filtered signals not enabled");
+      return;
     }
     const compact = buildCompactDiscordSignal("WOLVRENE DECISION SIGNAL");
     sendExternalAlert("WOLVRENE DECISION SIGNAL", `${decisionPlan.phase} ${decisionPlan.direction} at ${decisionPlan.entry ? formatPrice(decisionPlan.entry) : "market"}`, compact);
@@ -5711,6 +5722,26 @@ function orderRoi(order: TradeOrder) {
                       <div className="text-gray-500">Signals</div>
                       <div className="font-bold text-white">{smartFibContext.lastSignals.length}</div>
                     </div>
+                  </div>
+                  <div className="mt-2 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Sniper</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperState ?? "NONE"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Level</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperLevelName ?? "--"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Distance ATR</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperDistanceAtr ?? "--"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Touched</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperTouched ? "YES" : "NO"}</div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">
+                    <div className="text-gray-500">Rejected</div>
+                    <div className="font-bold text-white">{smartFibContext.smartFibSniperRejected ? "YES" : "NO"}</div>
                   </div>
                   <div className="mt-2 text-[10px]">
                     <div className="text-gray-500">Alignment</div>
