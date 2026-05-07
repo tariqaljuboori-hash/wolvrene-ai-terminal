@@ -5386,6 +5386,11 @@ function orderRoi(order: TradeOrder) {
                       <div>Reason: <span className="text-purple-200">{smartFibContext.swingSelectionReason || 'N/A'}</span></div>
                       <div>Quality: <span className="text-purple-200">{smartFibContext.rangeQuality}</span></div>
                       <div>Zone: <span className="text-purple-200">{smartFibContext.currentZoneState || 'N/A'}</span></div>
+                      <div>Sniper: <span className="text-purple-200">{smartFibContext.smartFibSniperState || 'NONE'}</span></div>
+                      <div>Level: <span className="text-purple-200">{smartFibContext.smartFibSniperLevelName || '--'}</span></div>
+                      <div>Distance ATR: <span className="text-purple-200">{smartFibContext.smartFibSniperDistanceAtr ? smartFibContext.smartFibSniperDistanceAtr.toFixed(2) : '--'}</span></div>
+                      <div>Touched: <span className="text-purple-200">{smartFibContext.smartFibSniperTouched ? 'YES' : 'NO'}</span></div>
+                      <div>Rejected: <span className="text-purple-200">{smartFibContext.smartFibSniperRejected ? 'YES' : 'NO'}</span></div>
                     </div>
                     {smartFibContext.invalidationReason && (
                       <p className="mt-1 text-[10px] text-red-400">Blocked: {smartFibContext.invalidationReason}</p>
